@@ -6,6 +6,7 @@ from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 import matplotlib.pyplot as plt
 import seaborn as sns
+import uuid
 
 # Set Seaborn style for beautiful plots
 sns.set_theme(style="whitegrid", palette="viridis")
@@ -46,10 +47,10 @@ FX_EXPECTED_COLUMNS = {
 }
 
 BANK_EXPECTED_COLUMNS = {
-    'Date': 'Date',
-    'Credit': 'Credit', # Or 'Deposit'
-    'Debit': 'Debit',   # Or 'Withdrawal'
-    'Description': 'Description'
+    'Date': ['Date', 'Transaction Date', 'Value Date', 'Value date'],
+    'Credit': ['Credit', 'Credit Amount', 'Money In', 'Deposit', 'Credit amount'], # Or 'Deposit'
+    'Debit': ['Debit', 'Debit Amount', 'Money Out', 'Withdrawal', 'Debit amount'],   # Or 'Withdrawal'
+    'Description': ['Description', 'Narrative', 'Transaction Details', 'Customer reference', 'Transaction Remarks:', 'Transaction Details', 'TransactionDetails', 'Transaction\nDetails']
 }
 
 
@@ -363,31 +364,31 @@ def reconcile_adjustment_row(
             bank_record_key = (
                 target_bank_df_key,
                 bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
-                round(bank_amt, 2),
+                round(amount, 2),
                 operation
             )
-            if bank_record_key not in st.session_state.matched_bank_keys:
-                st.session_state.matched_adjustments_list.append({
-                    'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
-                    'Adjustment_Amount': amount,
-                    'Adjustment_Operation': operation,
-                    'Adjustment_Intermediary_Account': intermediary_account,
-                    'Adjustment_Currency': currency,
-                    'Bank_Table': target_bank_df_key,
-                    'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
-                    'Bank_Statement_Amount': bank_amt,
-                    'Bank_Matched_Column': amount_column,
-                    'Bank_Row_Index': idx
-                })
-                st.session_state.matched_bank_keys.add(bank_record_key)
-                if debug:
-                    st.success("✅ Match found and recorded!")
-                match_found = True
-                break
-            else:
-                if debug:
-                    st.warning("⚠️ Potential duplicate match skipped (bank record already matched).")
-                continue
+            # if bank_record_key not in st.session_state.matched_bank_keys:
+            st.session_state.matched_adjustments_list.append({
+                'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
+                'Adjustment_Amount': amount,
+                'Adjustment_Operation': operation,
+                'Adjustment_Intermediary_Account': intermediary_account,
+                'Adjustment_Currency': currency,
+                'Bank_Table': target_bank_df_key,
+                'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
+                'Bank_Statement_Amount': bank_amt,
+                'Bank_Matched_Column': amount_column,
+                'Bank_Row_Index': idx
+            })
+            st.session_state.matched_bank_keys.add(bank_record_key)
+            if debug:
+                st.success("✅ Match found and recorded!")
+            match_found = True
+            break
+            # else:
+            #     if debug:
+            #         st.warning("⚠️ Potential duplicate match skipped (bank record already matched).")
+            #     continue
 
     if not match_found:
         if debug:
@@ -445,7 +446,12 @@ def perform_reconciliation():
         description_col = get_description_columns(bank_df_copy.columns.tolist())
 
         if not date_col or not amount_cols or not description_col:
-            st.warning(f"Skipping '{bank_key}': Missing required columns (Date, Amount, or Description).")
+            st.warning(
+                f"Skipping '{bank_key}': Missing required columns:"
+                f"{' Date,' if not date_col else ''}"
+                f"{' Amount,' if not amount_cols else ''}"
+                f"{' Description' if not description_col else ''}".rstrip(',')
+            )
             continue
 
         bank_df_copy['_ParsedDate'] = bank_df_copy[date_col].apply(parse_date)
@@ -453,6 +459,7 @@ def perform_reconciliation():
         for idx, row in bank_df_copy.iterrows():
             row_date = row.get('_ParsedDate')
             if not isinstance(row_date, datetime) or pd.isna(row_date):
+                st.warning(f"Row {idx} in '{bank_key}' has invalid or missing parsed date: {row.get(date_col)}")
                 continue
 
             description = str(row.get(description_col, '')).strip()
@@ -476,12 +483,15 @@ def perform_reconciliation():
                     rounded_amt,
                     operation_for_key
                 )
+
                 if bank_record_key in st.session_state.matched_bank_keys:
                     is_matched_in_any_way = True
                     break
+
             if is_matched_in_any_way:
                 continue
 
+            # Not matched: warn with reason
             final_amt_col_for_unmatched = None
             final_amt_val_for_unmatched = None
             for amt_col in amount_cols:
@@ -490,6 +500,17 @@ def perform_reconciliation():
                     final_amt_col_for_unmatched = amt_col
                     final_amt_val_for_unmatched = round(amt_val, 2)
                     break
+
+            unmatched_reason = f"""
+            ➤ Unmatched Bank Entry Detected:
+            • Bank: {bank_key}
+            • Row Index: {idx}
+            • Date: {row_date.strftime('%Y-%m-%d')}
+            • Amount: {final_amt_val_for_unmatched}
+            • Column: {final_amt_col_for_unmatched}
+            • Description: {description or 'N/A'}
+            • Match Key Tried: {bank_record_key}
+            """
 
             if final_amt_val_for_unmatched is not None:
                 st.session_state.unmatched_bank_records_list.append({
@@ -501,52 +522,55 @@ def perform_reconciliation():
                     'Original_Row_Index': idx
                 })
 
-    st.session_state.df_matched_adjustments = pd.DataFrame(st.session_state.matched_adjustments_list)
-    st.session_state.df_unmatched_adjustments = pd.DataFrame(st.session_state.unmatched_adjustments_list)
-    st.session_state.df_unmatched_bank_records = pd.DataFrame(st.session_state.unmatched_bank_records_list)
+        st.session_state.df_matched_adjustments = pd.DataFrame(st.session_state.matched_adjustments_list)
+        st.session_state.df_unmatched_adjustments = pd.DataFrame(st.session_state.unmatched_adjustments_list)
+        st.session_state.df_unmatched_bank_records = pd.DataFrame(st.session_state.unmatched_bank_records_list)
 
-    st.success("Reconciliation Complete!")
-    st.write("---")
-    st.write(f"✅ Total Adjustments Matched: {len(st.session_state.df_matched_adjustments)}")
-    st.write(f"❌ Total Adjustments Unmatched: {len(st.session_state.df_unmatched_adjustments)}")
-    st.write(f"📄 Total Unmatched Bank Records: {len(st.session_state.df_unmatched_bank_records)}")
+        st.success("Reconciliation Complete!")
+        st.write("---")
+        st.write(f"✅ Total Adjustments Matched: {len(st.session_state.df_matched_adjustments)}")
+        st.write(f"❌ Total Adjustments Unmatched: {len(st.session_state.df_unmatched_adjustments)}")
+        st.write(f"📄 Total Unmatched Bank Records: {len(st.session_state.df_unmatched_bank_records)}")
 
-    # Display results in expanders
-    with st.expander("Matched Adjustments"):
-        if not st.session_state.df_matched_adjustments.empty:
-            st.dataframe(st.session_state.df_matched_adjustments)
-            st.download_button(
-                label="Download Matched Adjustments",
-                data=st.session_state.df_matched_adjustments.to_csv(index=False).encode('utf-8'),
-                file_name="matched_adjustments.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info("No matched adjustments.")
+        # Display results in expanders
+        with st.expander("Matched Adjustments"):
+            if not st.session_state.df_matched_adjustments.empty:
+                st.dataframe(st.session_state.df_matched_adjustments)
+                st.download_button(
+                    label="Download Matched Adjustments",
+                    data=st.session_state.df_matched_adjustments.to_csv(index=False).encode('utf-8'),
+                    file_name="matched_adjustments.csv",
+                    mime="text/csv",
+                    key=f"download_{uuid.uuid4()}"
+                )
+            else:
+                st.info("No matched adjustments.")
 
-    with st.expander("Unmatched Adjustments"):
-        if not st.session_state.df_unmatched_adjustments.empty:
-            st.dataframe(st.session_state.df_unmatched_adjustments)
-            st.download_button(
-                label="Download Unmatched Adjustments",
-                data=st.session_state.df_unmatched_adjustments.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_adjustments.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info("No unmatched adjustments.")
+        with st.expander("Unmatched Adjustments"):
+            if not st.session_state.df_unmatched_adjustments.empty:
+                st.dataframe(st.session_state.df_unmatched_adjustments)
+                st.download_button(
+                    label="Download Unmatched Adjustments",
+                    data=st.session_state.df_unmatched_adjustments.to_csv(index=False).encode('utf-8'),
+                    file_name="unmatched_adjustments.csv",
+                    mime="text/csv",
+                    key=f"download_{uuid.uuid4()}"
+                )
+            else:
+                st.info("No unmatched adjustments.")
 
-    with st.expander("Unmatched Bank Records"):
-        if not st.session_state.df_unmatched_bank_records.empty:
-            st.dataframe(st.session_state.df_unmatched_bank_records)
-            st.download_button(
-                label="Download Unmatched Bank Records",
-                data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_bank_records.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info("No unmatched bank records.")
+        with st.expander("Unmatched Bank Records"):
+            if not st.session_state.df_unmatched_bank_records.empty:
+                st.dataframe(st.session_state.df_unmatched_bank_records)
+                st.download_button(
+                    label="Download Unmatched Bank Records",
+                    data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
+                    file_name="unmatched_bank_records.csv",
+                    mime="text/csv",
+                    key=f"download_{uuid.uuid4()}"
+                )
+            else:
+                st.info("No unmatched bank records.")
 
 def perform_data_analysis_and_visualizations():
     """Performs data analysis and generates visualizations based on reconciliation results."""
@@ -860,12 +884,11 @@ def fx_reconciliation_app():
 
                 for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
                     # Try to pre-select if a column with a similar name exists
-                    initial_selection = default_val if default_val in df_fx_raw.columns else ""
-                    
+                    initial_selection = default_val if default_val.strip() in [col.strip() for col in df_fx_raw.columns] else ""
                     mapped_col = st.selectbox(
                         f"Map '{expected_col}' to:",
                         options=available_columns,
-                        index=available_columns.index(initial_selection) if initial_selection else 0,
+                        index = [col.strip() for col in available_columns].index(initial_selection.strip()) if initial_selection else 0,
                         key=f"fx_map_{expected_col}"
                     )
                     fx_column_mappings[expected_col] = mapped_col if mapped_col else None
@@ -943,8 +966,8 @@ def fx_reconciliation_app():
                         current_file_mappings = data['column_mappings'] # Use the stored mappings for this file
 
                         for expected_col, default_val in BANK_EXPECTED_COLUMNS.items():
-                            initial_selection = current_file_mappings.get(expected_col) or (default_val if default_val in df_bank_raw.columns else "")
-                            
+                            initial_selection = current_file_mappings.get(expected_col) or next((col for col in df_bank_raw.columns if col.strip() in default_val), None)
+                            # initial_selection = current_file_mappings.get(expected_col) or (default_val if default_val in df_bank_raw.columns else "")
                             mapped_col = st.selectbox(
                                 f"Map '{expected_col}' (or main amount) to:",
                                 options=available_columns,

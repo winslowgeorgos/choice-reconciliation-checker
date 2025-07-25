@@ -1,3 +1,4 @@
+
 # pages/fx_reconciliation_page.py
 import streamlit as st
 import pandas as pd
@@ -29,7 +30,14 @@ date_formats = [
     '%Y.%m.%d',
     '%d/%m/%Y',
     '%-d/%-m/%Y',
-    '%-d.%-m.%Y'
+    '%-d.%-m.%Y',
+    '%Y-%m-%d %H:%M:%S', # For datetime strings
+    '%Y/%m/%d %H:%M:%S',
+    '%d.%m.%Y %H:%M:%S',
+    '%Y.%m.%d %H:%M:%S',
+    '%d/%m/%Y %H:%M:%S',
+    '%-d/%-m/%Y %H:%M:%S',
+    '%-d.%-m.%Y %H:%M:%S'
 ]
 
 # Fuzzy matching threshold for bank names (0-100)
@@ -132,22 +140,29 @@ def resolve_amount_column(columns, action_type, is_sell_side=False):
     """
     Identifies the correct amount column (e.g., 'Credit Amount', 'Debit Amount')
     based on action type, prioritizing the mapped standard names.
+    This function is now primarily used to check for the presence of the mapped
+    standard columns and resolve which of 'Credit Amount' or 'Debit Amount' to use.
     """
     columns_lower = [col.lower() for col in columns]
 
+    # Prioritize the standardized mapped names
     if not is_sell_side: # Refers to the local currency amount in FX trade (Counterparty Payment)
         if action_type == 'Bank Buy': # We pay local currency (debit)
             if 'Debit Amount' in columns: return 'Debit Amount'
+            # Fallback if mapped name not present, though it should be after pre-processing
             return next((columns[i] for i, col in enumerate(columns_lower) if col in ['withdrawal', 'debit']), None)
         elif action_type == 'Bank Sell': # We receive local currency (credit)
             if 'Credit Amount' in columns: return 'Credit Amount'
+            # Fallback if mapped name not present
             return next((columns[i] for i, col in enumerate(columns_lower) if col in ['deposit', 'credit']), None)
     else: # is_sell_side refers to the foreign currency amount in FX trade (Choice Payment)
         if action_type == 'Bank Buy': # We receive foreign currency (credit)
             if 'Credit Amount' in columns: return 'Credit Amount'
+            # Fallback if mapped name not present
             return next((columns[i] for i, col in enumerate(columns_lower) if col in ['deposit', 'credit']), None)
         elif action_type == 'Bank Sell': # We pay foreign currency (debit)
             if 'Debit Amount' in columns: return 'Debit Amount'
+            # Fallback if mapped name not present
             return next((columns[i] for i, col in enumerate(columns_lower) if col in ['withdrawal', 'debit']), None)
     return None
 
@@ -157,10 +172,6 @@ def resolve_date_column(columns):
         if candidate in columns:
             return candidate
     return None
-
-def get_amount_columns(columns):
-    """Returns a list of potential amount columns, including the standardized names."""
-    return [col for col in columns if col.lower() in ['deposit', 'credit', 'withdrawal', 'debit', 'amount', 'value', 'credit amount', 'debit amount']]
 
 def get_description_columns(columns):
     """Identifies the description column from a list of column names."""
@@ -173,10 +184,22 @@ def get_description_columns(columns):
 
 def parse_date(date_str_raw):
     """Parses a date string into a datetime object using predefined formats."""
+    if pd.isna(date_str_raw):
+        return None
+    
+    # Try direct pandas to_datetime for robustness
+    try:
+        # Infer format first, much faster for standard formats
+        return pd.to_datetime(date_str_raw, infer_datetime_format=True, errors='coerce')
+    except Exception:
+        pass # Fallback to manual formats if infer fails
+
+    # Fallback to predefined formats if pandas infer_datetime_format fails
     if not isinstance(date_str_raw, str):
         return None
-    # Attempt to parse as date only, stripping time if present
-    date_str = date_str_raw.split()[0].strip()
+        
+    date_str = str(date_str_raw).strip() # Ensure it's a string
+
     for fmt in date_formats:
         try:
             return datetime.strptime(date_str, fmt)
@@ -195,29 +218,39 @@ def process_fx_match(
     bank_currency_info_field: str,
     is_sell_side: bool,
     date_tolerance_days: int = 3,
-    debug_mode: bool = False # Added debug_mode parameter
-) -> bool:
+    debug_mode: bool = False
+) -> tuple or None: # Returns (bank_key, bank_row_idx) on match, else None
     amount = safe_float(fx_row.get(fx_amount_field))
     if amount is None or action_type not in ['Bank Buy', 'Bank Sell']:
         if debug_mode:
-            st.info(f"DEBUG: Skipping FX row due to invalid amount ({amount}) or action type ({action_type}).")
-        return False
+            st.error(f"DEBUG: Skipping FX row due to invalid amount ({amount}) or action type ({action_type}).")
+        return None
 
     parsed_date = fx_row.get('Created At')
     if parsed_date:
-        parsed_date = pd.to_datetime(parsed_date)
+        # Ensure parsed_date from FX trade df is a datetime object
+        if not isinstance(parsed_date, datetime):
+            parsed_date = parse_date(str(parsed_date)) # Use helper to parse if it's a string
 
     if not isinstance(parsed_date, datetime):
         if debug_mode:
-            st.info(f"DEBUG: Skipping FX row due to unparseable 'Created At' date: {fx_row.get('Created At')}.")
-        return False
+            st.error(f"DEBUG: Skipping FX row due to unparseable 'Created At' date: {fx_row.get('Created At')}.")
+        return None
 
     counterparty_raw = str(fx_row.get(bank_currency_info_field, '')).strip()
     parts = counterparty_raw.split('-')
     if len(parts) < 2:
         if debug_mode:
-            st.info(f"DEBUG: Skipping FX row due to insufficient parts in '{bank_currency_info_field}': {counterparty_raw}.")
-        return False
+            st.error(f"DEBUG: Skipping FX row due to insufficient parts in '{bank_currency_info_field}': {counterparty_raw}. Expected 'BankName-Currency'.")
+        unmatched_list.append({
+            'Date': parsed_date.strftime('%Y-%m-%d'),
+            'Bank Table (Expected)': f"N/A ({counterparty_raw})",
+            'Action Type': action_type,
+            'Amount': amount,
+            'Status': 'Invalid Bank/Currency Info in FX Trade',
+            'Source Column': bank_currency_info_field
+        })
+        return None
 
     trade_bank_name = parts[0].strip()
     trade_currency = parts[1].strip().upper()
@@ -234,15 +267,17 @@ def process_fx_match(
     target_bank_df_key = None
 
     for bank_df_key_in_dict in all_bank_dfs.keys():
+        # Check for exact match first
         if trade_bank_key_full == bank_df_key_in_dict:
             target_bank_df_key = bank_df_key_in_dict
             if debug_mode:
-                st.info(f"DEBUG: Direct match found for bank key: {target_bank_df_key}")
+                st.success(f"DEBUG: Direct match found for bank key: {target_bank_df_key}")
             break
+        # Then fuzzy match
         elif fuzz.ratio(trade_bank_key_full, bank_df_key_in_dict) >= FUZZY_MATCH_THRESHOLD:
             target_bank_df_key = bank_df_key_in_dict
             if debug_mode:
-                st.info(f"DEBUG: Fuzzy match found for bank key: {target_bank_df_key} (Ratio: {fuzz.ratio(trade_bank_key_full, bank_df_key_in_dict)})")
+                st.success(f"DEBUG: Fuzzy match found for bank key: {target_bank_df_key} (Ratio: {fuzz.ratio(trade_bank_key_full, bank_df_key_in_dict)})")
             break
 
     if not target_bank_df_key:
@@ -251,56 +286,58 @@ def process_fx_match(
             'Bank Table (Expected)': trade_bank_key_full,
             'Action Type': action_type,
             'Amount': amount,
-            'Status': 'No Bank Statement Found',
+            'Status': 'No Matching Bank Statement File Found',
             'Source Column': bank_currency_info_field
         })
         if debug_mode:
             st.warning(f"DEBUG: No matching bank statement found for expected key: {trade_bank_key_full}")
-        return False
+        return None
 
     bank_df = all_bank_dfs[target_bank_df_key]
     bank_df_columns = bank_df.columns.tolist()
 
+    # 'Date Column' is now expected to be the standardized name after pre-processing
     date_column = 'Date Column'
     amount_column = resolve_amount_column(bank_df_columns, action_type, is_sell_side)
     
-    if not date_column or not amount_column:
+    if date_column not in bank_df.columns:
+        # This should ideally not happen if pre-processing is successful
         unmatched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
-            'Status': 'Missing Date/Amount Column in Bank Statement',
+            'Status': f"Mapped Date Column '{date_column}' Missing in Bank Statement after pre-processing",
             'Source Column': bank_currency_info_field
         })
         if debug_mode:
-            st.warning(f"DEBUG: Missing date ({date_column}) or amount ({amount_column}) column in bank statement '{target_bank_df_key}'.")
-        return False
-    
-    if date_column not in bank_df.columns:
-        st.error(f"Error: Mapped date column '{date_column}' not found in bank statement '{target_bank_df_key}'. Please check your mapping.")
+            st.error(f"DEBUG: Mapped date column '{date_column}' not found in bank statement '{target_bank_df_key}' during matching.")
+        return None
+
+    if not amount_column or amount_column not in bank_df.columns:
         unmatched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
-            'Status': f"Mapped Date Column '{date_column}' Missing in Bank Statement",
+            'Status': 'Missing or Unresolvable Amount Column in Bank Statement',
             'Source Column': bank_currency_info_field
         })
-        return False
-
-    p_date = pd.to_datetime(parsed_date.strftime('%Y-%m-%d'))
-    bank_df['_ParsedDate'] = bank_df[date_column].apply(parse_date)
-
-    valid_dates_df = bank_df[bank_df['_ParsedDate'].notna()]
-    date_matches = valid_dates_df[
-        valid_dates_df['_ParsedDate'].dt.date.between(
-            p_date.date() - pd.Timedelta(days=date_tolerance_days),
-            p_date.date() + pd.Timedelta(days=date_tolerance_days)
+        if debug_mode:
+            st.warning(f"DEBUG: Missing or unresolvable amount column ({amount_column}) in bank statement '{target_bank_df_key}'.")
+        return None
+    
+    # Date in bank_df['Date Column'] is already parsed to datetime during pre-processing
+    # Filter based on the 'Date Column' which is already a datetime type
+    date_matches = bank_df[
+        bank_df['Date Column'].dt.date.between(
+            parsed_date.date() - pd.Timedelta(days=date_tolerance_days),
+            parsed_date.date() + pd.Timedelta(days=date_tolerance_days)
         )
     ]
+
     if debug_mode:
-        st.info(f"DEBUG: Found {len(date_matches)} potential date matches in '{target_bank_df_key}' within ±{date_tolerance_days} days of {p_date.strftime('%Y-%m-%d')}.")
+        st.info(f"DEBUG: Found {len(date_matches)} potential date matches in '{target_bank_df_key}' within ±{date_tolerance_days} days of {parsed_date.strftime('%Y-%m-%d')}.")
 
 
     bank_statement_currency_parts = target_bank_df_key.split(' ')
@@ -311,14 +348,15 @@ def process_fx_match(
         bank_amt = safe_float(bank_amt_raw)
 
         if debug_mode:
-            st.info(f"DEBUG: Checking bank record - Date: {bank_row.get(date_column)}, Amount (raw): {bank_amt_raw}, Amount (parsed): {bank_amt}, Column: {amount_column}")
+            st.info(f"DEBUG: Checking bank record - Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Amount (raw): {bank_amt_raw}, Amount (parsed): {bank_amt}, Column: {amount_column}")
 
         if bank_amt is not None:
             converted_amount = convert_currency(amount, trade_currency, bank_statement_currency, parsed_date)
             if debug_mode:
                 st.info(f"DEBUG: Converting trade amount {amount} {trade_currency} to {bank_statement_currency}. Converted: {converted_amount}")
 
-            if converted_amount is not None and abs(converted_amount) > 1.0 and abs(bank_amt - converted_amount) < 0.01:
+            # Match within a small tolerance for floating point comparisons
+            if converted_amount is not None and abs(converted_amount) > 0.01 and abs(bank_amt - converted_amount) < 0.05: # Adjusted tolerance
                 matched_list.append({
                     'Date': parsed_date.strftime('%Y-%m-%d'),
                     'Bank Table': target_bank_df_key,
@@ -335,10 +373,9 @@ def process_fx_match(
                 found_match = True
                 if debug_mode:
                     st.success(f"DEBUG: MATCH FOUND! Trade Amount: {amount:.2f} {trade_currency}, Bank Amount: {bank_amt:.2f} {bank_statement_currency}, Converted: {converted_amount:.2f}")
-                break
+                return (target_bank_df_key, idx) # Return unique identifier of matched bank record
         elif debug_mode:
             st.info(f"DEBUG: Bank amount is None or invalid for this row.")
-
 
     if not found_match:
         unmatched_list.append({
@@ -346,13 +383,13 @@ def process_fx_match(
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
-            'Status': 'Not Found in Bank Statement (Amount or No Match)',
+            'Status': 'No Bank Statement Match (Amount or Date Tolerance)',
             'Source Column': bank_currency_info_field
         })
         if debug_mode:
             st.warning(f"DEBUG: No match found for FX trade after checking all potential bank records.")
 
-    return found_match
+    return None # No match found
 
 def graphed_analysis_app():
     st.title("💰 FX Trade Verification and Reconciliation")
@@ -402,7 +439,7 @@ def graphed_analysis_app():
 
             for display_name, suggested_col in fx_required_cols.items():
                 default_index = 0
-                if suggested_col in fx_col_options:
+                if suggested_col and suggested_col in fx_col_options:
                     default_index = fx_col_options.index(suggested_col)
                 
                 selected_col = st.selectbox(
@@ -414,30 +451,30 @@ def graphed_analysis_app():
                 col_mapping[display_name] = selected_col if selected_col != '-- Select Column --' else None
 
             # Apply mapping
-            renamed_fx_df = pd.DataFrame() # Initialize an empty DataFrame
+            renamed_fx_df = pd.DataFrame() 
             mapped_columns_dict = {}
 
             for original_name, selected_map in col_mapping.items():
-                if selected_map: # Only include if a column was selected
+                if selected_map: 
                     mapped_columns_dict[selected_map] = original_name
 
-            # Select and rename columns based on the mapping
             if mapped_columns_dict:
-                # Ensure only selected columns are in the DataFrame and rename them
                 cols_to_keep = [col for col in mapped_columns_dict.keys() if col in fx_trade_df.columns]
                 renamed_fx_df = fx_trade_df[cols_to_keep].rename(columns=mapped_columns_dict)
-                fx_trade_df = renamed_fx_df # Update the main DataFrame
+                fx_trade_df = renamed_fx_df 
                 st.success("FX Trade Tracker columns mapped successfully!")
                 st.dataframe(fx_trade_df.head())
             else:
                 st.warning("No FX Trade Tracker columns mapped. Proceeding with original column names.")
-                fx_trade_df = fx_trade_df # Keep original if no mapping selected
+                # fx_trade_df remains unchanged if no mapping selected
+                # This could lead to errors if expected columns are missing later.
+                # Consider adding a check before reconciliation.
 
 
         except Exception as e:
             st.error(f"Error loading FX Trade Tracker: {e}")
 
-    # Bank Statements Upload
+    # Bank Statements Upload and Pre-processing
     st.subheader("Upload Bank Statement(s)")
     uploaded_bank_files = st.file_uploader("Choose Bank Statement(s) (CSV or XLSX)", type=["csv", "xlsx"], accept_multiple_files=True, key="bank_uploader")
 
@@ -451,7 +488,6 @@ def graphed_analysis_app():
                 if file_name.endswith('.xlsx'):
                     xls = pd.ExcelFile(uploaded_file)
                     sheet_names = xls.sheet_names
-                    # For multiple bank files, we need a unique key for each selectbox
                     selected_sheet = st.selectbox(f"Select sheet for {file_name}", sheet_names, key=f"bank_sheet_selector_{file_name}")
                     df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
                 else:
@@ -459,19 +495,15 @@ def graphed_analysis_app():
 
                 df.columns = df.columns.str.strip()
 
-                # Create a robust key for bank_dfs that includes bank name and currency
-                # Assume filename format: bankname_currency.csv or bankname_currency.xlsx
-                # If not, prompt user for currency or default.
                 base_name = file_name.lower().replace('.csv', '').replace('.xlsx', '')
                 name_parts = base_name.split('_')
 
                 bank_name_for_key = normalize_bank_key(name_parts[0].strip())
-                currency_for_key = "UNKNOWN" # Default currency if not found
+                currency_for_key = "UNKNOWN" 
 
                 if len(name_parts) > 1:
                     currency_for_key = name_parts[1].strip().upper()
                 else:
-                    # If no currency in filename, ask the user or default
                     st.info(f"Could not infer currency from '{file_name}'. Please enter it below.")
                     currency_input = st.text_input(f"Enter currency for '{file_name}' (e.g., KES, USD):", key=f"currency_input_{file_name}")
                     if currency_input:
@@ -480,24 +512,18 @@ def graphed_analysis_app():
                         st.warning(f"Currency for '{file_name}' is set to 'UNKNOWN'. This might affect matching.")
 
 
-                key = f"{bank_name_for_key} {currency_for_key}".lower() # Consistent format: "normalizedbankname currency"
+                key = f"{bank_name_for_key} {currency_for_key}".lower() 
 
-                # Debugging: Print the key being generated for bank_dfs
-                if st.session_state.get('debug_toggle', False):
-                    st.info(f"DEBUG (Upload): File: {file_name}, Base Name: {base_name}, Name Parts: {name_parts}, Normalized Bank Name: {bank_name_for_key}, Inferred Currency: {currency_for_key}, Final Bank DFS Key: {key}")
-
-
-                # Column mapping for Bank Statements
+                # Column mapping for Bank Statements (user selects original columns)
                 st.subheader(f"Column Mapping for {file_name}")
                 bank_col_options = ['-- Select Column --'] + df.columns.tolist()
                 bank_col_mapping = {}
 
-                # Define the required Bank columns and their default/suggested mappings
                 bank_required_cols = {
                     'Date Column': resolve_date_column(df.columns.tolist()),
                     'Description Column': get_description_columns(df.columns.tolist()),
-                    'Credit Amount': next((col for col in df.columns if col.lower() in ['deposit', 'credit']), None),
-                    'Debit Amount': next((col for col in df.columns if col.lower() in ['withdrawal', 'debit']), None)
+                    'Credit Amount': next((col for col in df.columns if col.lower() in ['deposit', 'credit', 'credit amount']), None),
+                    'Debit Amount': next((col for col in df.columns if col.lower() in ['withdrawal', 'debit', 'debit amount']), None)
                 }
 
                 for display_name, suggested_col in bank_required_cols.items():
@@ -512,39 +538,38 @@ def graphed_analysis_app():
                         key=f"bank_map_select_{file_name}_{display_name}"
                     )
                     bank_col_mapping[display_name] = selected_col if selected_col != '-- Select Column --' else None
-
-                # Store the mapped column names in session state for later use in reconciliation
-                st.session_state[f'bank_mapped_cols_{key}'] = bank_col_mapping
                 
-                # Now, apply the selected mappings to the DataFrame
+                # Apply the selected mappings to the DataFrame and pre-process
                 temp_df = df.copy()
                 
-                # Create a dictionary for renaming
-                rename_dict = {}
-                for mapped_name, selected_original_col in bank_col_mapping.items():
-                    if selected_original_col: # If a column was selected for mapping
-                        rename_dict[selected_original_col] = mapped_name
+                # Create a dictionary for renaming. Only rename if a mapping was selected.
+                rename_dict = {
+                    selected_original_col: mapped_name
+                    for mapped_name, selected_original_col in bank_col_mapping.items()
+                    if selected_original_col and selected_original_col in temp_df.columns
+                }
                 
-                # Apply renaming
+                # Rename columns
                 if rename_dict:
-                    # Drop existing standardized columns if they conflict with mapped names
-                    # and are not the source of the mapping
-                    cols_to_drop = []
-                    for std_col in ['Date Column', 'Description Column', 'Credit Amount', 'Debit Amount']:
-                        if std_col in temp_df.columns and std_col not in rename_dict.values():
-                            cols_to_drop.append(std_col)
-                    
-                    temp_df.drop(columns=cols_to_drop, errors='ignore', inplace=True)
-                    
-                    # Filter rename_dict to only include columns actually present in temp_df
-                    valid_rename_dict = {k: v for k, v in rename_dict.items() if k in temp_df.columns}
-                    temp_df.rename(columns=valid_rename_dict, inplace=True)
+                    temp_df.rename(columns=rename_dict, inplace=True)
+                
+                # Ensure date column is datetime and filter out invalid dates
+                if 'Date Column' in temp_df.columns:
+                    temp_df['Date Column'] = temp_df['Date Column'].apply(parse_date)
+                    temp_df = temp_df[temp_df['Date Column'].notna()].copy() # Filter and create a copy to avoid SettingWithCopyWarning
+                else:
+                    st.error(f"Error: 'Date Column' not found in '{file_name}' after mapping. This file cannot be processed for reconciliation.")
+                    continue # Skip this bank file if date column is missing
 
-                bank_dfs[key] = temp_df # Update the DataFrame in bank_dfs with mapped columns
+                # Apply safe_float to amount columns
+                if 'Credit Amount' in temp_df.columns:
+                    temp_df['Credit Amount'] = temp_df['Credit Amount'].apply(safe_float)
+                if 'Debit Amount' in temp_df.columns:
+                    temp_df['Debit Amount'] = temp_df['Debit Amount'].apply(safe_float)
 
+                bank_dfs[key] = temp_df # Store the pre-processed DataFrame
                 st.success(f"Bank Statement '{file_name}' loaded and columns mapped successfully! (Internal Key: `{key}`)")
-                st.dataframe(bank_dfs[key].head()) # Show the head of the *mapped* DataFrame
-
+                st.dataframe(bank_dfs[key].head())
 
             except Exception as e:
                 st.error(f"Error loading Bank Statement '{uploaded_file.name}': {e}")
@@ -567,6 +592,13 @@ def graphed_analysis_app():
         if fx_trade_df.empty or not bank_dfs:
             st.warning("Please upload both FX Trade Tracker and Bank Statement(s) to run reconciliation.")
         else:
+            # Check if essential FX columns are available after mapping
+            fx_required_for_recon = ['Action Type', 'Status', 'Created At', 'Buy Currency Amount', 'Buy Trade Info', 'Sell Currency Amount', 'Sell Trade Info']
+            if not all(col in fx_trade_df.columns for col in fx_required_for_recon):
+                missing_cols = [col for col in fx_required_for_recon if col not in fx_trade_df.columns]
+                st.error(f"Missing essential FX Trade Tracker columns for reconciliation: {', '.join(missing_cols)}. Please map them correctly.")
+                return
+
             with st.spinner("Reconciling transactions... This may take a moment."):
                 buy_match_count = 0
                 sell_match_count = 0
@@ -575,7 +607,9 @@ def graphed_analysis_app():
                 unmatched_bank_records = []
                 matched_buy = []
                 matched_sell = []
-                matched_set = set() # To track matched bank records to avoid double counting for bank-only unmatched
+                
+                # To track matched bank records: (bank_key, original_bank_df_index)
+                matched_bank_record_keys = set() 
 
                 # Ensure column names are stripped of whitespace for consistent access
                 fx_trade_df.columns = fx_trade_df.columns.str.strip()
@@ -584,11 +618,14 @@ def graphed_analysis_app():
                     action_type = str(row.get('Action Type', '')).strip()
                     status = str(row.get('Status', '')).strip().lower()
 
-                    if status == 'cancelled':
+                    if status in ['cancelled', 'pending']: # Skip cancelled or pending trades
+                        if debug_mode:
+                            st.info(f"DEBUG: Skipping FX row {index} due to status: {status}.")
                         continue
 
                     # Process Buy Side (Counterparty Payment)
-                    if process_fx_match(
+                    # process_fx_match now returns (bank_key, bank_row_idx) on match
+                    matched_info = process_fx_match(
                         row,
                         bank_dfs,
                         unmatched_buy,
@@ -596,111 +633,89 @@ def graphed_analysis_app():
                         action_type,
                         'Buy Currency Amount',
                         'Buy Trade Info',
-                        False,
+                        False, # is_sell_side
                         date_tolerance_days=date_tolerance_days,
-                        debug_mode=debug_mode # Pass debug_mode
-                    ):
+                        debug_mode=debug_mode
+                    )
+                    if matched_info:
                         buy_match_count += 1
-                        bank_info = row.get('Buy Trade Info')
-                        buy_amount_fx = safe_float(row.get('Buy Currency Amount'))
-                        p_createdAt = parse_date(row.get('Created At'))
+                        matched_bank_record_keys.add(matched_info)
 
-                        if bank_info and buy_amount_fx is not None and isinstance(p_createdAt, datetime):
-                            parts = bank_info.lower().split('-')
-                            if len(parts) >= 2:
-                                key_bank = normalize_bank_key(parts[0].strip())
-                                key_currency = parts[1].strip().upper()
-                                matched_entry = next((item for item in matched_buy if item['Date'] == p_createdAt.strftime('%Y-%m-%d') and item['Trade Amount'] == buy_amount_fx), None)
-                                if matched_entry:
-                                    # Use the new consistent key format for matched_set
-                                    matched_set.add((f"{key_bank} {key_currency}", round(matched_entry['Bank Statement Amount'], 2), matched_entry['Date']))
-
-                # Process Sell Side (Choice Payment)
-                sell_amount_fx = safe_float(row.get('Sell Currency Amount'))
-                if process_fx_match(
-                    row,
-                    bank_dfs,
-                    unmatched_sell,
-                    matched_sell,
-                    action_type,
-                    'Sell Currency Amount',
-                    'Sell Trade Info',
-                    True,
-                    date_tolerance_days=date_tolerance_days, # Pass debug_mode
-                    debug_mode=debug_mode
-                ):
-                    sell_match_count += 1
-                    bank_info = row.get('Sell Trade Info')
-                    p_createdAt = parse_date(row.get('Created At'))
-
-                    if bank_info and sell_amount_fx is not None and isinstance(p_createdAt, datetime):
-                        parts = bank_info.lower().split('-')
-                        if len(parts) >= 2:
-                            key_bank = normalize_bank_key(parts[0].strip())
-                            key_currency = parts[1].strip().upper()
-                            matched_entry = next((item for item in matched_sell if item['Date'] == p_createdAt.strftime('%Y-%m-%d') and item['Trade Amount'] == sell_amount_fx), None)
-                            if matched_entry:
-                                # Use the new consistent key format for matched_set
-                                matched_set.add((f"{key_bank} {key_currency}", round(matched_entry['Bank Statement Amount'], 2), matched_entry['Date']))
+                    # Process Sell Side (Choice Payment)
+                    matched_info = process_fx_match(
+                        row,
+                        bank_dfs,
+                        unmatched_sell,
+                        matched_sell,
+                        action_type,
+                        'Sell Currency Amount',
+                        'Sell Trade Info',
+                        True, # is_sell_side
+                        date_tolerance_days=date_tolerance_days,
+                        debug_mode=debug_mode
+                    )
+                    if matched_info:
+                        sell_match_count += 1
+                        matched_bank_record_keys.add(matched_info)
 
                 # Scan for unmatched bank records
                 for bank_key, bank_df in bank_dfs.items():
                     bank_df.columns = bank_df.columns.str.strip()
                     
-                    # Directly use the standardized column names as they are now applied to bank_df
+                    # These columns are expected to exist and be pre-processed
                     date_col = 'Date Column'
                     description_col = 'Description Column'
-                    
-                    # Get all potential amount columns, including the mapped ones
-                    amount_cols = [col for col in ['Credit Amount', 'Debit Amount'] if col in bank_df.columns]
-                    # Fallback to original detection if mapped columns aren't present
-                    if not amount_cols:
-                        amount_cols = get_amount_columns(bank_df.columns.tolist())
+                    credit_col = 'Credit Amount'
+                    debit_col = 'Debit Amount'
 
-                    if date_col not in bank_df.columns or description_col not in bank_df.columns or not amount_cols:
-                        st.warning(f"Skipping bank statement '{bank_key}': Missing required mapped columns ('Date Column', 'Description Column') or no amount columns found.")
+                    if date_col not in bank_df.columns or description_col not in bank_df.columns or \
+                       (credit_col not in bank_df.columns and debit_col not in bank_df.columns):
+                        st.warning(f"Skipping bank statement '{bank_key}': Missing required mapped columns ('Date Column', 'Description Column', or neither 'Credit Amount'/'Debit Amount') after pre-processing.")
                         continue
 
-                    bank_df['_ParsedDate'] = bank_df[date_col].apply(parse_date)
-
-                    # bank_key is now expected to be "normalizedbankname currency"
-                    key_parts = bank_key.split(' ')
-                    key_bank = key_parts[0].strip()
-                    key_currency = key_parts[1].strip().upper() if len(key_parts) > 1 else "UNKNOWN" # Safeguard
-
                     for idx, row in bank_df.iterrows():
-                        row_date_parsed = row.get('_ParsedDate')
-                        if not isinstance(row_date_parsed, datetime):
-                            continue
+                        # Use the already parsed and validated date
+                        row_date_parsed = row.get(date_col) 
 
-                        description = str(row.get(description_col, '')).strip()
-
-                        for amt_col in amount_cols:
-                            amt_val = safe_float(row.get(amt_col))
-                            if amt_val is None or abs(amt_val) < 0.01:
-                                continue
-
-                            rounded_amt = round(amt_val, 2)
-                            # Construct match_key using the consistent format
-                            match_key = (f"{key_bank} {key_currency}", rounded_amt, row_date_parsed.strftime('%Y-%m-%d'))
-
-                            if match_key not in matched_set:
+                        # Check if this specific bank record (by its original index) was matched
+                        if (bank_key, idx) not in matched_bank_record_keys:
+                            # This bank record was not matched by any FX trade
+                            amount_found = None
+                            transaction_type_col_name = "N/A"
+                            
+                            # Check credit amount first
+                            credit_amt = safe_float(row.get(credit_col))
+                            if credit_amt is not None and abs(credit_amt) > 0.01:
+                                amount_found = credit_amt
+                                transaction_type_col_name = credit_col
+                            
+                            # If no credit or credit is zero, check debit
+                            if amount_found is None:
+                                debit_amt = safe_float(row.get(debit_col))
+                                if debit_amt is not None and abs(debit_amt) > 0.01:
+                                    amount_found = debit_amt
+                                    transaction_type_col_name = debit_col
+                            
+                            if amount_found is not None:
                                 unmatched_bank_records.append({
-                                    'Bank Table': bank_key, # Keep the full bank_key here for clarity of source
-                                    'Date': row_date_parsed.strftime('%Y-%m-%d'),
-                                    'Description': description,
-                                    'Transaction Type (Column)': amt_col,
-                                    'Amount': rounded_amt
+                                    'Bank Table': bank_key, 
+                                    'Date': row_date_parsed.strftime('%Y-%m-%d') if row_date_parsed else None,
+                                    'Description': str(row.get(description_col, '')).strip(),
+                                    'Transaction Type (Column)': transaction_type_col_name,
+                                    'Amount': round(amount_found, 2)
                                 })
+                            elif debug_mode:
+                                st.info(f"DEBUG: Skipping bank record {idx} in {bank_key} - no significant amount in Credit/Debit after pre-processing.")
 
-                st.session_state['unmatched_buy_df'] = pd.DataFrame(unmatched_buy)
-                st.session_state['unmatched_sell_df'] = pd.DataFrame(unmatched_sell)
-                st.session_state['matched_buy_df'] = pd.DataFrame(matched_buy)
-                st.session_state['matched_sell_df'] = pd.DataFrame(matched_sell)
-                st.session_state['unmatched_bank_df'] = pd.DataFrame(unmatched_bank_records)
-                st.session_state['fx_trade_df'] = fx_trade_df # Store the original FX df for analysis
 
-                st.success("Reconciliation complete!")
+            st.session_state['unmatched_buy_df'] = pd.DataFrame(unmatched_buy)
+            st.session_state['unmatched_sell_df'] = pd.DataFrame(unmatched_sell)
+            st.session_state['matched_buy_df'] = pd.DataFrame(matched_buy)
+            st.session_state['matched_sell_df'] = pd.DataFrame(matched_sell)
+            st.session_state['unmatched_bank_df'] = pd.DataFrame(unmatched_bank_records)
+            st.session_state['fx_trade_df'] = fx_trade_df 
+
+            st.success("Reconciliation complete!")
 
     # --- Results and Analysis Section ---
     st.header("3. Reconciliation Results and Analysis")
@@ -714,9 +729,14 @@ def graphed_analysis_app():
         fx_trade_df = st.session_state['fx_trade_df']
 
         st.subheader("Overall Summary")
+        # Ensure 'Action Type' and 'Status' exist before filtering
         total_fx_trades = len(fx_trade_df) if not fx_trade_df.empty else 0
-        total_buy_side_trades = len(fx_trade_df[fx_trade_df['Action Type'] == 'Bank Buy']) if not fx_trade_df.empty else 0
-        total_sell_side_trades = len(fx_trade_df[fx_trade_df['Action Type'] == 'Bank Sell']) if not fx_trade_df.empty else 0
+        
+        # Calculate totals only for non-cancelled/pending trades for more accurate reconciliation rate
+        active_fx_trades = fx_trade_df[~fx_trade_df['Status'].isin(['cancelled', 'pending'])] if 'Status' in fx_trade_df.columns else fx_trade_df
+        total_buy_side_trades_active = len(active_fx_trades[active_fx_trades['Action Type'] == 'Bank Buy']) if 'Action Type' in active_fx_trades.columns else 0
+        total_sell_side_trades_active = len(active_fx_trades[active_fx_trades['Action Type'] == 'Bank Sell']) if 'Action Type' in active_fx_trades.columns else 0
+
 
         st.write(f"✅ **BUY Side Matches (Counterparty Payment):** {len(matched_buy_df)}")
         st.write(f"❌ **BUY Side Unmatched:** {len(unmatched_buy_df)}")
@@ -728,13 +748,19 @@ def graphed_analysis_app():
 
         # --- 7.1. Reconciliation Summary Statistics ---
         st.subheader("Reconciliation Summary Statistics")
-        st.write(f"Total FX Trade Records (excluding cancelled/pending): {total_fx_trades - len(fx_trade_df[fx_trade_df['Status'].isin(['cancelled', 'pending'])]) if not fx_trade_df.empty else 0}")
-        st.write(f"Total Buy Side FX Trades processed: {total_buy_side_trades}")
-        st.write(f"Total Sell Side FX Trades processed: {total_sell_side_trades}")
-        st.write(f"Buy Side Matched: {len(matched_buy_df)} ({(len(matched_buy_df)/total_buy_side_trades*100):.2f}%)" if total_buy_side_trades > 0 else "Buy Side Matched: 0 (N/A%)")
-        st.write(f"Buy Side Unmatched: {len(unmatched_buy_df)} ({(len(unmatched_buy_df)/total_buy_side_trades*100):.2f}%)" if total_buy_side_trades > 0 else "Buy Side Unmatched: 0 (N/A%)")
-        st.write(f"Sell Side Matched: {len(matched_sell_df)} ({(len(matched_sell_df)/total_sell_side_trades*100):.2f}%)" if total_sell_side_trades > 0 else "Sell Side Matched: 0 (N/A%)")
-        st.write(f"Sell Side Unmatched: {len(unmatched_sell_df)} ({(len(unmatched_sell_df)/total_sell_side_trades*100):.2f}%)" if total_sell_side_trades > 0 else "Sell Side Unmatched: 0 (N/A%)")
+        st.write(f"Total FX Trade Records (excluding cancelled/pending): {len(active_fx_trades)}")
+        st.write(f"Total Buy Side FX Trades processed: {total_buy_side_trades_active}")
+        st.write(f"Total Sell Side FX Trades processed: {total_sell_side_trades_active}")
+        
+        buy_match_rate = (len(matched_buy_df)/total_buy_side_trades_active*100) if total_buy_side_trades_active > 0 else 0
+        buy_unmatch_rate = (len(unmatched_buy_df)/total_buy_side_trades_active*100) if total_buy_side_trades_active > 0 else 0
+        sell_match_rate = (len(matched_sell_df)/total_sell_side_trades_active*100) if total_sell_side_trades_active > 0 else 0
+        sell_unmatch_rate = (len(unmatched_sell_df)/total_sell_side_trades_active*100) if total_sell_side_trades_active > 0 else 0
+
+        st.write(f"Buy Side Matched: {len(matched_buy_df)} ({buy_match_rate:.2f}%)")
+        st.write(f"Buy Side Unmatched: {len(unmatched_buy_df)} ({buy_unmatch_rate:.2f}%)")
+        st.write(f"Sell Side Matched: {len(matched_sell_df)} ({sell_match_rate:.2f}%)")
+        st.write(f"Sell Side Unmatched: {len(unmatched_sell_df)} ({sell_unmatch_rate:.2f}%)")
         st.write(f"Unmatched Bank Records (not found in FX trades): {len(unmatched_bank_df)}")
 
         st.markdown("---")
@@ -773,15 +799,24 @@ def graphed_analysis_app():
         st.subheader("Distribution of FX Trade Amounts")
         if not fx_trade_df.empty:
             fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-            sns.histplot(fx_trade_df['Buy Currency Amount'].dropna(), kde=True, bins=10, ax=axes[0])
-            axes[0].set_title('Distribution of Buy Currency Amounts (FX Trades)')
-            axes[0].set_xlabel('Amount')
-            axes[0].set_ylabel('Frequency')
+            if 'Buy Currency Amount' in fx_trade_df.columns:
+                sns.histplot(fx_trade_df['Buy Currency Amount'].dropna(), kde=True, bins=10, ax=axes[0])
+                axes[0].set_title('Distribution of Buy Currency Amounts (FX Trades)')
+                axes[0].set_xlabel('Amount')
+                axes[0].set_ylabel('Frequency')
+            else:
+                axes[0].set_title('Buy Currency Amount Data Missing')
+                axes[0].text(0.5, 0.5, 'No data', horizontalalignment='center', verticalalignment='center', transform=axes[0].transAxes)
 
-            sns.histplot(fx_trade_df['Sell Currency Amount'].dropna(), kde=True, bins=10, color='orange', ax=axes[1])
-            axes[1].set_title('Distribution of Sell Currency Amounts (FX Trades)')
-            axes[1].set_xlabel('Amount')
-            axes[1].set_ylabel('Frequency')
+            if 'Sell Currency Amount' in fx_trade_df.columns:
+                sns.histplot(fx_trade_df['Sell Currency Amount'].dropna(), kde=True, bins=10, color='orange', ax=axes[1])
+                axes[1].set_title('Distribution of Sell Currency Amounts (FX Trades)')
+                axes[1].set_xlabel('Amount')
+                axes[1].set_ylabel('Frequency')
+            else:
+                axes[1].set_title('Sell Currency Amount Data Missing')
+                axes[1].text(0.5, 0.5, 'No data', horizontalalignment='center', verticalalignment='center', transform=axes[1].transAxes)
+            
             plt.tight_layout()
             st.pyplot(fig)
         else:
@@ -790,6 +825,8 @@ def graphed_analysis_app():
         # --- 7.5. Top Unmatched Bank Records by Amount ---
         st.subheader("Top Unmatched Bank Records by Amount")
         if not unmatched_bank_df.empty:
+            # Ensure 'Amount' column is numeric for sorting
+            unmatched_bank_df['Amount'] = pd.to_numeric(unmatched_bank_df['Amount'], errors='coerce')
             top_unmatched_bank = unmatched_bank_df.sort_values(by='Amount', ascending=False).head(10)
             fig, ax = plt.subplots(figsize=(10, 7))
             sns.barplot(x='Amount', y='Bank Table', hue='Transaction Type (Column)', data=top_unmatched_bank, dodge=True, ax=ax)
@@ -819,24 +856,29 @@ def graphed_analysis_app():
         st.subheader("Daily Transaction Trend (FX Trades)")
         if not fx_trade_df.empty and 'Created At' in fx_trade_df.columns:
             fx_trades_valid_dates = fx_trade_df.dropna(subset=['Created At']).copy()
+            # Ensure 'Created At' is treated as datetime for trend analysis
             fx_trades_valid_dates['DateOnly'] = fx_trades_valid_dates['Created At'].apply(parse_date)
             fx_trades_valid_dates = fx_trades_valid_dates[fx_trades_valid_dates['DateOnly'].notna()]
-            daily_counts = fx_trades_valid_dates['DateOnly'].value_counts().sort_index().reset_index()
-            daily_counts.columns = ['Date', 'Count']
+            
+            if not fx_trades_valid_dates.empty:
+                daily_counts = fx_trades_valid_dates['DateOnly'].dt.date.value_counts().sort_index().reset_index()
+                daily_counts.columns = ['Date', 'Count']
 
-            if len(daily_counts) > 1:
-                fig, ax = plt.subplots(figsize=(12, 6))
-                sns.lineplot(x='Date', y='Count', data=daily_counts, marker='o', ax=ax)
-                ax.set_title('Daily FX Trade Transaction Count')
-                ax.set_xlabel('Date')
-                ax.set_ylabel('Number of Trades')
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                st.pyplot(fig)
+                if len(daily_counts) > 1:
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    sns.lineplot(x='Date', y='Count', data=daily_counts, marker='o', ax=ax)
+                    ax.set_title('Daily FX Trade Transaction Count')
+                    ax.set_xlabel('Date')
+                    ax.set_ylabel('Number of Trades')
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                else:
+                    st.info("Not enough date diversity in FX trades for daily trend visualization (only one unique date or less).")
             else:
-                st.info("Not enough date diversity in FX trades for daily trend visualization.")
+                st.info("No valid 'Created At' dates found in FX trades for daily trend visualization.")
         else:
-            st.info("No FX Trade data with valid dates for daily trend visualization.")
+            st.info("No FX Trade data with valid 'Created At' column for daily trend visualization.")
 
         st.markdown("---")
 
@@ -897,3 +939,8 @@ def graphed_analysis_app():
                 key="download_unmatched_bank"
             )
 
+# # To run the Streamlit app directly
+# if __name__ == '__main__':
+#     graphed_analysis_app()
+
+# ```
