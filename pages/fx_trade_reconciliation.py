@@ -1,4 +1,3 @@
-
 # pages/fx_reconciliation_page.py
 import streamlit as st
 import pandas as pd
@@ -40,8 +39,22 @@ date_formats = [
     '%-d.%-m.%Y %H:%M:%S'
 ]
 
-# Fuzzy matching threshold for bank names (0-100)
+# Fuzzy matching threshold for bank names (0-100) - Less relevant with direct selection, but kept for normalize_bank_key
 FUZZY_MATCH_THRESHOLD = 70
+
+# PREDEFINED LIST OF BANK NAME - CURRENCY COMBINATIONS
+PREDEFINED_BANK_CURRENCY_COMBOS = sorted([ # Sorted for better UX in dropdown
+    "ncba KES", "ncba USD", "ncba EUR", "ncba GBP",
+    "equity KES", "equity USD", "equity EUR", "equity GBP",
+    "i&m KES", "i&m USD", "i&m EUR", "i&m GBP",
+    "cbk KES", "cbk USD", "cbk EUR", "cbk GBP",
+    "kcb KES", "kcb USD", "kcb EUR", "kcb GBP",
+    "sbm KES", "sbm USD", "sbm EUR", "sbm GBP",
+    "absa KES", "absa USD", "absa EUR", "absa GBP",
+    "kingdom KES", "kingdom USD", "kingdom EUR", "kingdom GBP",
+    # Add more as needed based on actual bank offerings
+])
+
 
 # Hardcoded FX Rates (for demonstration purposes)
 FX_RATES = {
@@ -98,8 +111,12 @@ def safe_float(x):
     except (ValueError, TypeError):
         return None
 
-def normalize_bank_key(raw_key):
-    """Normalizes bank names to a consistent short code, using fuzzy matching."""
+def normalize_bank_key(raw_key, debug_mode=False): # Added debug_mode parameter
+    """
+    Normalizes bank names to a consistent short code, using fuzzy matching.
+    This function is primarily used for standardizing the bank *name* part of the FX trade info.
+    For bank statement file naming, we will now use direct user selection.
+    """
     raw_key_lower = str(raw_key).lower().strip()
     replacements = {
         'ncba bank kenya plc': 'ncba',
@@ -118,53 +135,66 @@ def normalize_bank_key(raw_key):
     # First, try direct replacement
     for long, short in replacements.items():
         if raw_key_lower == long: # Exact match for full name
+            if debug_mode:
+                st.info(f"DEBUG: normalize_bank_key - Direct match found: '{raw_key_lower}' -> '{short}'")
             return short
         if raw_key_lower.startswith(long): # If it starts with a long name, use short
+            if debug_mode:
+                st.info(f"DEBUG: normalize_bank_key - Starts with match found: '{raw_key_lower}' starts with '{long}' -> '{short}'")
             return short # Crucial change: just return the short form
 
     # If no direct match, try fuzzy matching against known short codes/replacements
     all_bank_names = list(replacements.values()) + list(replacements.keys())
     all_bank_names = list(set(all_bank_names)) # Ensure uniqueness
 
+    if debug_mode:
+        st.info(f"DEBUG: normalize_bank_key - Fuzzy matching '{raw_key_lower}' against set: {all_bank_names}")
+
     match = process.extractOne(raw_key_lower, all_bank_names, scorer=fuzz.ratio)
-    if match and match[1] >= FUZZY_MATCH_THRESHOLD:
-        for long, short in replacements.items():
-            if match[0] == long: # Exact match for fuzzy result
-                return short
-            if match[0].startswith(long): # Fuzzy result starts with long name
-                return short
-        return match[0] # Return the best fuzzy match if no specific short form found
+    if match:
+        if debug_mode:
+            st.info(f"DEBUG: normalize_bank_key - Fuzzy match result: '{match[0]}' with relevance value {match[1]} (Threshold: {FUZZY_MATCH_THRESHOLD})")
+        if match[1] >= FUZZY_MATCH_THRESHOLD:
+            for long, short in replacements.items():
+                if match[0] == long: # Exact match for fuzzy result
+                    if debug_mode:
+                        st.info(f"DEBUG: normalize_bank_key - Fuzzy result '{match[0]}' direct mapped to '{short}'")
+                    return short
+                if match[0].startswith(long): # Fuzzy result starts with long name
+                    if debug_mode:
+                        st.info(f"DEBUG: normalize_bank_key - Fuzzy result '{match[0]}' starts with '{long}' mapped to '{short}'")
+                    return short
+            return match[0] # Return the best fuzzy match if no specific short form found
+    if debug_mode:
+        st.info(f"DEBUG: normalize_bank_key - No good fuzzy match found for '{raw_key_lower}'. Returning original.")
     return raw_key_lower # Return original if no good fuzzy match
 
-def resolve_amount_column(columns, action_type, is_sell_side=False):
+def resolve_amount_column(columns, action_type, bank_statement_currency):
     """
-    Identifies the correct amount column (e.g., 'Credit Amount', 'Debit Amount')
-    based on action type, prioritizing the mapped standard names.
-    This function is now primarily used to check for the presence of the mapped
-    standard columns and resolve which of 'Credit Amount' or 'Debit Amount' to use.
+    Identifies the correct amount column ('Credit Amount' or 'Debit Amount')
+    based on the action type and bank statement currency, following the new rules.
     """
-    columns_lower = [col.lower() for col in columns]
+    bank_statement_currency = bank_statement_currency.upper()
 
-    # Prioritize the standardized mapped names
-    if not is_sell_side: # Refers to the local currency amount in FX trade (Counterparty Payment)
-        if action_type == 'Bank Buy': # We pay local currency (debit)
+    if bank_statement_currency == 'KES':
+        if action_type == 'Bank Buy': # KES (Debit column) for Bank Buy
             if 'Debit Amount' in columns: return 'Debit Amount'
-            # Fallback if mapped name not present, though it should be after pre-processing
-            return next((columns[i] for i, col in enumerate(columns_lower) if col in ['withdrawal', 'debit']), None)
-        elif action_type == 'Bank Sell': # We receive local currency (credit)
+        elif action_type == 'Bank Sell': # KES (Credit column) for Bank Sell
             if 'Credit Amount' in columns: return 'Credit Amount'
-            # Fallback if mapped name not present
-            return next((columns[i] for i, col in enumerate(columns_lower) if col in ['deposit', 'credit']), None)
-    else: # is_sell_side refers to the foreign currency amount in FX trade (Choice Payment)
-        if action_type == 'Bank Buy': # We receive foreign currency (credit)
-            if 'Credit Amount' in columns: return 'Credit Amount'
-            # Fallback if mapped name not present
-            return next((columns[i] for i, col in enumerate(columns_lower) if col in ['deposit', 'credit']), None)
-        elif action_type == 'Bank Sell': # We pay foreign currency (debit)
+    else: # Another currency (USD, EURO etc)
+        if action_type == 'Bank Sell': # Non-KES (Debit column) for Bank Sell
             if 'Debit Amount' in columns: return 'Debit Amount'
-            # Fallback if mapped name not present
-            return next((columns[i] for i, col in enumerate(columns_lower) if col in ['withdrawal', 'debit']), None)
+        elif action_type == 'Bank Buy': # Non-KES (Credit column) for Bank Buy
+            if 'Credit Amount' in columns: return 'Credit Amount'
+            
+    # Fallback if mapped name not present or rule not met.
+    # This part can be made more robust if there are other column names to consider.
+    columns_lower = [col.lower() for col in columns]
+    if 'debit amount' in columns_lower: return 'Debit Amount'
+    if 'credit amount' in columns_lower: return 'Credit Amount'
+    
     return None
+
 
 def resolve_date_column(columns):
     """Identifies the date column from a list of column names, prioritizing common formats."""
@@ -175,9 +205,7 @@ def resolve_date_column(columns):
 
 def get_description_columns(columns):
     """Identifies the description column from a list of column names."""
-    for desc in ['Transaction details','Transaction', 'Customer reference','Narration',
-                 'Transaction Details', 'Detail',  'Transaction Remarks:',
-                 'TransactionDetails', 'Description', 'Narrative', 'Remarks']:
+    for desc in ['Description', 'Narrative', 'Transaction Details', 'Customer reference', 'Transaction Remarks:', 'Transaction Details', 'Transaction\nDetails']:
         if desc in columns:
             return desc
     return None
@@ -216,7 +244,6 @@ def process_fx_match(
     action_type: str,
     fx_amount_field: str,
     bank_currency_info_field: str,
-    is_sell_side: bool,
     date_tolerance_days: int = 3,
     debug_mode: bool = False
 ) -> tuple or None: # Returns (bank_key, bank_row_idx) on match, else None
@@ -252,53 +279,56 @@ def process_fx_match(
         })
         return None
 
-    trade_bank_name = parts[0].strip()
+    trade_bank_name_raw = parts[0].strip()
     trade_currency = parts[1].strip().upper()
 
-    normalized_trade_bank_key_prefix = normalize_bank_key(trade_bank_name)
-    trade_bank_key_full = f"{normalized_trade_bank_key_prefix} {trade_currency}".lower()
-
+    # Normalize FX trade bank name using the existing normalize_bank_key
+    normalized_trade_bank_name = normalize_bank_key(trade_bank_name_raw, debug_mode).lower()
+    
     if debug_mode:
-        st.info(f"DEBUG: Processing FX Trade - Date: {parsed_date.strftime('%Y-%m-%d')}, Type: {action_type}, Amount: {amount}, Currency: {trade_currency}, Expected Bank Key: {trade_bank_key_full}")
-        st.info(f"DEBUG: Available Bank DFS keys: {list(all_bank_dfs.keys())}")
+        st.info(f"DEBUG: Processing FX Trade - Date: {parsed_date.strftime('%Y-%m-%d')}, Type: {action_type}, Amount: {amount}, Trade Currency: {trade_currency}, Normalized Trade Bank Name: {normalized_trade_bank_name}")
+        st.info(f"DEBUG: Available Bank Statement Keys: {list(all_bank_dfs.keys())}")
 
 
     found_match = False
     target_bank_df_key = None
+    best_bank_name_match_ratio = 0
+    potential_bank_df_key = None
 
-    for bank_df_key_in_dict in all_bank_dfs.keys():
-        # Check for exact match first
-        if trade_bank_key_full == bank_df_key_in_dict:
-            target_bank_df_key = bank_df_key_in_dict
-            if debug_mode:
-                st.success(f"DEBUG: Direct match found for bank key: {target_bank_df_key}")
-            break
-        # Then fuzzy match
-        elif fuzz.ratio(trade_bank_key_full, bank_df_key_in_dict) >= FUZZY_MATCH_THRESHOLD:
-            target_bank_df_key = bank_df_key_in_dict
-            if debug_mode:
-                st.success(f"DEBUG: Fuzzy match found for bank key: {target_bank_df_key} (Ratio: {fuzz.ratio(trade_bank_key_full, bank_df_key_in_dict)})")
-            break
+    # Now, with user-selected bank statement keys, we prioritize exact matches first
+    # The `bank_df_key_in_dict` will now be the exact 'bankname currency' string from the dropdown.
+    expected_bank_key_from_fx_trade = f"{normalized_trade_bank_name} {trade_currency}".lower()
 
-    if not target_bank_df_key:
+    if expected_bank_key_from_fx_trade in all_bank_dfs:
+        target_bank_df_key = expected_bank_key_from_fx_trade
+        if debug_mode:
+            st.success(f"DEBUG: DIRECT BANK KEY MATCH! Found bank statement: '{target_bank_df_key}' based on FX trade info and user selection.")
+    else:
+        # If no direct match, log and move to unmatched
+        if debug_mode:
+            st.warning(f"DEBUG: No exact bank statement file found matching FX trade expected key '{expected_bank_key_from_fx_trade}'.")
         unmatched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
-            'Bank Table (Expected)': trade_bank_key_full,
+            'Bank Table (Expected)': expected_bank_key_from_fx_trade,
             'Action Type': action_type,
             'Amount': amount,
-            'Status': 'No Matching Bank Statement File Found',
+            'Status': 'No Matching Bank Statement File Found (based on exact match from user selection)',
             'Source Column': bank_currency_info_field
         })
-        if debug_mode:
-            st.warning(f"DEBUG: No matching bank statement found for expected key: {trade_bank_key_full}")
         return None
+
 
     bank_df = all_bank_dfs[target_bank_df_key]
     bank_df_columns = bank_df.columns.tolist()
 
+    # The bank_statement_currency is now directly from the target_bank_df_key
+    bank_statement_currency_parts = target_bank_df_key.split(' ')
+    bank_statement_currency = bank_statement_currency_parts[1].upper() if len(bank_statement_currency_parts) > 1 else "UNKNOWN"
+
     # 'Date Column' is now expected to be the standardized name after pre-processing
     date_column = 'Date Column'
-    amount_column = resolve_amount_column(bank_df_columns, action_type, is_sell_side)
+    # Use the updated resolve_amount_column based on the new criteria
+    amount_column = resolve_amount_column(bank_df_columns, action_type, bank_statement_currency)
     
     if date_column not in bank_df.columns:
         # This should ideally not happen if pre-processing is successful
@@ -320,7 +350,7 @@ def process_fx_match(
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
-            'Status': 'Missing or Unresolvable Amount Column in Bank Statement',
+            'Status': 'Missing or Unresolvable Amount Column in Bank Statement based on new rules',
             'Source Column': bank_currency_info_field
         })
         if debug_mode:
@@ -340,23 +370,32 @@ def process_fx_match(
         st.info(f"DEBUG: Found {len(date_matches)} potential date matches in '{target_bank_df_key}' within ±{date_tolerance_days} days of {parsed_date.strftime('%Y-%m-%d')}.")
 
 
-    bank_statement_currency_parts = target_bank_df_key.split(' ')
-    bank_statement_currency = bank_statement_currency_parts[1].upper() if len(bank_statement_currency_parts) > 1 else "UNKNOWN"
-
     for idx, bank_row in date_matches.iterrows():
+        # Only consider bank records that have not been matched yet
+        if bank_df.at[idx, "Matched"] == True:
+            st.warning(f"DEBUG: Skipping bank record {idx} in {target_bank_df_key} (AMOUNT {bank_row.get(amount_column)}) (Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Desc: {bank_row.get('Description Column', 'N/A')}) as it's already matched.")
+            continue
+
         bank_amt_raw = bank_row.get(amount_column)
         bank_amt = safe_float(bank_amt_raw)
 
         if debug_mode:
-            st.info(f"DEBUG: Checking bank record - Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Amount (raw): {bank_amt_raw}, Amount (parsed): {bank_amt}, Column: {amount_column}")
+            st.info(f"DEBUG: Checking bank record {idx} in '{target_bank_df_key}':")
+            st.info(f"  Bank Record Details - Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Desc: {bank_row.get('Description Column', 'N/A')}, Amount (raw): {bank_amt_raw}, Amount (parsed): {bank_amt}, Column: {amount_column}")
 
         if bank_amt is not None:
+            # The trade_currency is the currency of the FX amount (e.g., Buy Currency Amount or Sell Currency Amount)
+            # The bank_statement_currency is the currency of the bank account (e.g., KES, USD, EUR)
             converted_amount = convert_currency(amount, trade_currency, bank_statement_currency, parsed_date)
+            amount_diff = abs(bank_amt - converted_amount) if converted_amount is not None else float('inf')
+
             if debug_mode:
-                st.info(f"DEBUG: Converting trade amount {amount} {trade_currency} to {bank_statement_currency}. Converted: {converted_amount}")
+                st.info(f"DEBUG: Trade Amount: {amount} {trade_currency}, Bank Statement Currency: {bank_statement_currency}. Converted Trade Amount: {converted_amount:.2f}")
+                st.info(f"DEBUG: Bank Amount: {bank_amt:.2f}, Converted Trade Amount: {converted_amount:.2f}, Difference: {amount_diff:.2f} (Tolerance: 0.05)")
+
 
             # Match within a small tolerance for floating point comparisons
-            if converted_amount is not None and abs(converted_amount) > 0.01 and abs(bank_amt - converted_amount) < 0.05: # Adjusted tolerance
+            if converted_amount is not None and abs(converted_amount) > 0.01 and amount_diff < 0.05: # Adjusted tolerance
                 matched_list.append({
                     'Date': parsed_date.strftime('%Y-%m-%d'),
                     'Bank Table': target_bank_df_key,
@@ -371,11 +410,14 @@ def process_fx_match(
                     'Source Column': bank_currency_info_field
                 })
                 found_match = True
+                bank_df.at[idx, "Matched"] = True # Mark this bank record as matched
                 if debug_mode:
-                    st.success(f"DEBUG: MATCH FOUND! Trade Amount: {amount:.2f} {trade_currency}, Bank Amount: {bank_amt:.2f} {bank_statement_currency}, Converted: {converted_amount:.2f}")
+                    st.success(f"DEBUG: MATCH FOUND! FX Trade Date: {parsed_date.strftime('%Y-%m-%d')}, Amount: {amount:.2f} {trade_currency} (Converted: {converted_amount:.2f} {bank_statement_currency}) matched with Bank Record {idx} (Date: {bank_row.get(date_column).strftime('%Y-%m-%d')}, Amount: {bank_amt:.2f} {bank_statement_currency}).")
                 return (target_bank_df_key, idx) # Return unique identifier of matched bank record
+            elif debug_mode:
+                st.info(f"DEBUG: No amount match for bank record {idx}. Difference: {amount_diff:.2f}. Bank Record: Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Amount: {bank_amt:.2f}, Description: {bank_row.get('Description Column', 'N/A')}")
         elif debug_mode:
-            st.info(f"DEBUG: Bank amount is None or invalid for this row.")
+            st.info(f"DEBUG: Bank amount is None or invalid for row {idx}.")
 
     if not found_match:
         unmatched_list.append({
@@ -387,7 +429,7 @@ def process_fx_match(
             'Source Column': bank_currency_info_field
         })
         if debug_mode:
-            st.warning(f"DEBUG: No match found for FX trade after checking all potential bank records.")
+            st.warning(f"DEBUG: No match found for FX trade (Date: {parsed_date.strftime('%Y-%m-%d')}, Amount: {amount}) after checking all potential bank records in '{target_bank_df_key}'.")
 
     return None # No match found
 
@@ -480,7 +522,7 @@ def graphed_analysis_app():
 
     bank_dfs = {}
     if uploaded_bank_files:
-        for uploaded_file in uploaded_bank_files:
+        for i, uploaded_file in enumerate(uploaded_bank_files):
             try:
                 file_name = uploaded_file.name
                 df = pd.DataFrame()
@@ -488,31 +530,28 @@ def graphed_analysis_app():
                 if file_name.endswith('.xlsx'):
                     xls = pd.ExcelFile(uploaded_file)
                     sheet_names = xls.sheet_names
-                    selected_sheet = st.selectbox(f"Select sheet for {file_name}", sheet_names, key=f"bank_sheet_selector_{file_name}")
+                    selected_sheet = st.selectbox(f"Select sheet for {file_name}", sheet_names, key=f"bank_sheet_selector_{file_name}_{i}")
                     df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
                 else:
                     df = pd.read_csv(uploaded_file)
 
                 df.columns = df.columns.str.strip()
 
-                base_name = file_name.lower().replace('.csv', '').replace('.xlsx', '')
-                name_parts = base_name.split('_')
+                st.subheader(f"Configure Bank Statement: {file_name}")
 
-                bank_name_for_key = normalize_bank_key(name_parts[0].strip())
-                currency_for_key = "UNKNOWN" 
+                # Dropdown for user to select predefined bank-currency combination
+                selected_bank_key = st.selectbox(
+                    f"Select bank and currency for '{file_name}':",
+                    options=['-- Select Bank and Currency --'] + PREDEFINED_BANK_CURRENCY_COMBOS,
+                    key=f"predefined_bank_key_select_{file_name}_{i}"
+                )
 
-                if len(name_parts) > 1:
-                    currency_for_key = name_parts[1].strip().upper()
-                else:
-                    st.info(f"Could not infer currency from '{file_name}'. Please enter it below.")
-                    currency_input = st.text_input(f"Enter currency for '{file_name}' (e.g., KES, USD):", key=f"currency_input_{file_name}")
-                    if currency_input:
-                        currency_for_key = currency_input.strip().upper()
-                    else:
-                        st.warning(f"Currency for '{file_name}' is set to 'UNKNOWN'. This might affect matching.")
-
-
-                key = f"{bank_name_for_key} {currency_for_key}".lower() 
+                if selected_bank_key == '-- Select Bank and Currency --':
+                    st.warning(f"Please select a bank and currency for '{file_name}' to proceed.")
+                    continue # Skip processing this file if no selection made
+                
+                # The key for bank_dfs is now directly the selected_bank_key (converted to lowercase)
+                key = selected_bank_key.lower()
 
                 # Column mapping for Bank Statements (user selects original columns)
                 st.subheader(f"Column Mapping for {file_name}")
@@ -522,8 +561,8 @@ def graphed_analysis_app():
                 bank_required_cols = {
                     'Date Column': resolve_date_column(df.columns.tolist()),
                     'Description Column': get_description_columns(df.columns.tolist()),
-                    'Credit Amount': next((col for col in df.columns if col.lower() in ['deposit', 'credit', 'credit amount']), None),
-                    'Debit Amount': next((col for col in df.columns if col.lower() in ['withdrawal', 'debit', 'debit amount']), None)
+                    'Credit Amount': next((col for col in df.columns if col.lower() in ['credit', 'credit amount', 'money in', 'deposit', 'credit amount']), None),
+                    'Debit Amount': next((col for col in df.columns if col.lower() in ['debit', 'debit amount', 'money out', 'withdrawal', 'debit amount']), None)
                 }
 
                 for display_name, suggested_col in bank_required_cols.items():
@@ -535,7 +574,7 @@ def graphed_analysis_app():
                         f"Map '{display_name}' for {file_name} to:",
                         options=bank_col_options,
                         index=default_index,
-                        key=f"bank_map_select_{file_name}_{display_name}"
+                        key=f"bank_map_select_{file_name}_{display_name}_{i}" # Added 'i' for unique key
                     )
                     bank_col_mapping[display_name] = selected_col if selected_col != '-- Select Column --' else None
                 
@@ -566,6 +605,9 @@ def graphed_analysis_app():
                     temp_df['Credit Amount'] = temp_df['Credit Amount'].apply(safe_float)
                 if 'Debit Amount' in temp_df.columns:
                     temp_df['Debit Amount'] = temp_df['Debit Amount'].apply(safe_float)
+                
+                # Initialize 'Matched' column
+                temp_df["Matched"] = False # All rows are initially unmatched
 
                 bank_dfs[key] = temp_df # Store the pre-processed DataFrame
                 st.success(f"Bank Statement '{file_name}' loaded and columns mapped successfully! (Internal Key: `{key}`)")
@@ -603,13 +645,11 @@ def graphed_analysis_app():
                 buy_match_count = 0
                 sell_match_count = 0
                 unmatched_buy = []
-                unmatched_sell = []
-                unmatched_bank_records = []
                 matched_buy = []
+                unmatched_sell = []
                 matched_sell = []
                 
-                # To track matched bank records: (bank_key, original_bank_df_index)
-                matched_bank_record_keys = set() 
+                # No longer need matched_bank_record_keys set as matching status is in DataFrame
 
                 # Ensure column names are stripped of whitespace for consistent access
                 fx_trade_df.columns = fx_trade_df.columns.str.strip()
@@ -624,8 +664,7 @@ def graphed_analysis_app():
                         continue
 
                     # Process Buy Side (Counterparty Payment)
-                    # process_fx_match now returns (bank_key, bank_row_idx) on match
-                    matched_info = process_fx_match(
+                    process_fx_match(
                         row,
                         bank_dfs,
                         unmatched_buy,
@@ -633,16 +672,13 @@ def graphed_analysis_app():
                         action_type,
                         'Buy Currency Amount',
                         'Buy Trade Info',
-                        False, # is_sell_side
                         date_tolerance_days=date_tolerance_days,
                         debug_mode=debug_mode
                     )
-                    if matched_info:
-                        buy_match_count += 1
-                        matched_bank_record_keys.add(matched_info)
+                    # The process_fx_match function now directly marks the bank_df with "Matched" = True
 
                     # Process Sell Side (Choice Payment)
-                    matched_info = process_fx_match(
+                    process_fx_match(
                         row,
                         bank_dfs,
                         unmatched_sell,
@@ -650,19 +686,16 @@ def graphed_analysis_app():
                         action_type,
                         'Sell Currency Amount',
                         'Sell Trade Info',
-                        True, # is_sell_side
                         date_tolerance_days=date_tolerance_days,
                         debug_mode=debug_mode
                     )
-                    if matched_info:
-                        sell_match_count += 1
-                        matched_bank_record_keys.add(matched_info)
+                    # The process_fx_match function now directly marks the bank_df with "Matched" = True
 
-                # Scan for unmatched bank records
+                # Collect unmatched bank records by filtering the 'Matched' column
+                unmatched_bank_records = []
                 for bank_key, bank_df in bank_dfs.items():
                     bank_df.columns = bank_df.columns.str.strip()
                     
-                    # These columns are expected to exist and be pre-processed
                     date_col = 'Date Column'
                     description_col = 'Description Column'
                     credit_col = 'Credit Amount'
@@ -673,39 +706,35 @@ def graphed_analysis_app():
                         st.warning(f"Skipping bank statement '{bank_key}': Missing required mapped columns ('Date Column', 'Description Column', or neither 'Credit Amount'/'Debit Amount') after pre-processing.")
                         continue
 
-                    for idx, row in bank_df.iterrows():
-                        # Use the already parsed and validated date
-                        row_date_parsed = row.get(date_col) 
+                    # Filter for rows where 'Matched' is False
+                    unmatched_bank_df_for_key = bank_df[bank_df["Matched"] == False].copy() # Work on a copy
 
-                        # Check if this specific bank record (by its original index) was matched
-                        if (bank_key, idx) not in matched_bank_record_keys:
-                            # This bank record was not matched by any FX trade
-                            amount_found = None
-                            transaction_type_col_name = "N/A"
-                            
-                            # Check credit amount first
-                            credit_amt = safe_float(row.get(credit_col))
-                            if credit_amt is not None and abs(credit_amt) > 0.01:
-                                amount_found = credit_amt
-                                transaction_type_col_name = credit_col
-                            
-                            # If no credit or credit is zero, check debit
-                            if amount_found is None:
-                                debit_amt = safe_float(row.get(debit_col))
-                                if debit_amt is not None and abs(debit_amt) > 0.01:
-                                    amount_found = debit_amt
-                                    transaction_type_col_name = debit_col
-                            
-                            if amount_found is not None:
-                                unmatched_bank_records.append({
-                                    'Bank Table': bank_key, 
-                                    'Date': row_date_parsed.strftime('%Y-%m-%d') if row_date_parsed else None,
-                                    'Description': str(row.get(description_col, '')).strip(),
-                                    'Transaction Type (Column)': transaction_type_col_name,
-                                    'Amount': round(amount_found, 2)
-                                })
-                            elif debug_mode:
-                                st.info(f"DEBUG: Skipping bank record {idx} in {bank_key} - no significant amount in Credit/Debit after pre-processing.")
+                    for idx, row in unmatched_bank_df_for_key.iterrows():
+                        row_date_parsed = row.get(date_col) 
+                        amount_found = None
+                        transaction_type_col_name = "N/A"
+                        
+                        credit_amt = safe_float(row.get(credit_col))
+                        if credit_amt is not None and abs(credit_amt) > 0.01:
+                            amount_found = credit_amt
+                            transaction_type_col_name = credit_col
+                        
+                        if amount_found is None:
+                            debit_amt = safe_float(row.get(debit_col))
+                            if debit_amt is not None and abs(debit_amt) > 0.01:
+                                amount_found = debit_amt
+                                transaction_type_col_name = debit_col
+                        
+                        if amount_found is not None:
+                            unmatched_bank_records.append({
+                                'Bank Table': bank_key, 
+                                'Date': row_date_parsed.strftime('%Y-%m-%d') if row_date_parsed else None,
+                                'Description': str(row.get(description_col, '')).strip(),
+                                'Transaction Type (Column)': transaction_type_col_name,
+                                'Amount': round(amount_found, 2)
+                            })
+                        elif debug_mode:
+                            st.info(f"DEBUG: Skipping bank record {idx} in {bank_key} - no significant amount in Credit/Debit after pre-processing and not matched.")
 
 
             st.session_state['unmatched_buy_df'] = pd.DataFrame(unmatched_buy)
@@ -938,9 +967,3 @@ def graphed_analysis_app():
                 mime="text/csv",
                 key="download_unmatched_bank"
             )
-
-# # To run the Streamlit app directly
-# if __name__ == '__main__':
-#     graphed_analysis_app()
-
-# ```
