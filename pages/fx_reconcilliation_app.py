@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import io
-from fuzzywuzzy import fuzz
-from fuzzywuzzy import process
+# from fuzzywuzzy import fuzz # Remove fuzzywuzzy imports
+# from fuzzywuzzy import process # Remove fuzzywuzzy imports
 import matplotlib.pyplot as plt
 import seaborn as sns
 import uuid
@@ -22,19 +22,41 @@ DATE_FORMATS = [
     '%-d.%-m.%Y %H:%M:%S'
 ]
 
-FUZZY_MATCH_THRESHOLD = 60 # Threshold for fuzzy matching bank names
+# FUZZY_MATCH_THRESHOLD = 60 # Remove this
 
+# Simplified BANK_NAME_MAP for normalization (if still needed for other purposes, e.g., display)
+# For direct matching, we'll use predefined options
 BANK_NAME_MAP = {
     'central bank of kenya': 'cbk', 'kenya commercial bank': 'kcb',
     'kingdom bank': 'kingdom', 'absa bank': 'absa', 'ABSA Bank': 'absa',
     'equity bank': 'equity', 'i&m bank': 'i&m', 'ncba bank kenya plc': 'ncba', 'ncba bank': 'ncba',
     'sbm bank (kenya) limited': 'sbm', 'sbm bank': 'sbm',
-    'baas temporary account': 'baas', # Added for consistency
-    'fx temporary account': 'fx_temp', # Added for consistency
-    'other temporary account': 'other_temp', # Added for consistency
-    'unclaimed funds': 'unclaimed_funds', # Added for consistency
-    'yeepay': 'yeepay' # Added for consistency
+    'baas temporary account': 'baas',
+    'fx temporary account': 'fx_temp',
+    'other temporary account': 'other_temp',
+    'unclaimed funds': 'unclaimed_funds',
+    'yeepay': 'yeepay'
 }
+
+# NEW: Predefined list of bank and currency combinations for user selection
+# This list should be exhaustive for all possible bank statements you expect.
+PREDEFINED_BANK_CURRENCY_OPTIONS = [
+    "Absa KES", "Absa USD", "Absa EUR", "Absa GBP",
+    "CBK KES", "CBK USD",
+    "Equity KES", "Equity USD", "Equity EUR", "Equity GBP",
+    "I&M KES", "I&M USD",
+    "KCB KES", "KCB USD",
+    "Kingdom KES", "Kingdom USD",
+    "NCBA KES", "NCBA USD", "NCBA EUR",
+    "SBM KES", "SBM USD",
+    "BAAS Temporary KES", "BAAS Temporary USD",
+    "FX Temporary KES", "FX Temporary USD",
+    "Other Temporary KES", "Other Temporary USD",
+    "Unclaimed Funds KES", "Unclaimed Funds USD",
+    "Yeepay KES", "Yeepay USD"
+    # Add more as needed
+]
+
 
 # Define expected columns for FX Tracker and Bank Statements
 FX_EXPECTED_COLUMNS = {
@@ -85,24 +107,24 @@ def safe_float(x):
     except (ValueError, TypeError):
         return None
 
-def normalize_bank_key(raw_key):
-    """Normalizes bank names to a consistent short code, using fuzzy matching."""
-    raw_key_lower = str(raw_key).lower().strip()
+# def normalize_bank_key(raw_key): # Remove or modify if still used elsewhere
+#     """Normalizes bank names to a consistent short code, using fuzzy matching."""
+#     raw_key_lower = str(raw_key).lower().strip()
     
-    # First, try direct replacement from BANK_NAME_MAP
-    for long, short in BANK_NAME_MAP.items():
-        if raw_key_lower.startswith(long):
-            return short # Return the short code if a direct prefix match is found
+#     # First, try direct replacement from BANK_NAME_MAP
+#     for long, short in BANK_NAME_MAP.items():
+#         if raw_key_lower.startswith(long):
+#             return short # Return the short code if a direct prefix match is found
 
-    # If no direct match, try fuzzy matching against known short codes/replacements
-    # Create a list of all possible normalized bank names for fuzzy matching
-    all_normalized_bank_names = list(set(BANK_NAME_MAP.values())) # Use only the short codes for fuzzy matching targets
+#     # If no direct match, try fuzzy matching against known short codes/replacements
+#     # Create a list of all possible normalized bank names for fuzzy matching
+#     all_normalized_bank_names = list(set(BANK_NAME_MAP.values())) # Use only the short codes for fuzzy matching targets
 
-    match = process.extractOne(raw_key_lower, all_normalized_bank_names, scorer=fuzz.ratio)
-    if match and match[1] >= FUZZY_MATCH_THRESHOLD:
-        return match[0] # Return the best fuzzy matched normalized name
+#     match = process.extractOne(raw_key_lower, all_normalized_bank_names, scorer=fuzz.ratio)
+#     if match and match[1] >= FUZZY_MATCH_THRESHOLD:
+#         return match[0] # Return the best fuzzy matched normalized name
     
-    return raw_key_lower # Return original if no good fuzzy match or direct map
+#     return raw_key_lower # Return original if no good fuzzy match or direct map
 
 def resolve_amount_column(columns, operation):
     """Identifies the amount column based on the operation (credit/debit)."""
@@ -231,13 +253,22 @@ def reconcile_adjustment_row(
     expected_currency_adj = None
 
     if mode == 'local':
-        expected_bank_name_adj = normalize_bank_key(intermediary_account)
-        expected_currency_adj = currency
-        if not expected_bank_name_adj:
-            if debug:
-                st.warning(f"❌ Could not normalize bank name for local mode: '{intermediary_account}'")
-            st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Could not normalize bank name for local mode'})
-            return False
+        # For local mode, derive bank name from intermediary account and currency from 'Currency'
+        # Assume intermediary_account can be directly mapped or contains the bank name
+        # For simplicity, let's assume `Intermediary Account` in FX Tracker is a direct bank name
+        # We need a way to map 'Intermediary Account' to the standardized bank names.
+        # This might require a small mapping or direct string comparison if the FX data is clean.
+        # For now, let's just use the raw intermediary_account and currency for comparison
+        # against the user-selected bank_df_key.
+        expected_bank_name_adj = intermediary_account.lower()
+        expected_currency_adj = currency.upper()
+
+        # A potential improvement here: if FX's `Intermediary Account` is "Equity Bank", you'd want to
+        # map it to "Equity" for comparison with the "Equity KES" / "Equity USD" keys.
+        # This can be done by using BANK_NAME_MAP for the `Intermediary Account`
+        # if `normalize_bank_key` (modified to not use fuzzy) is still desired.
+        # For now, let's keep it simple and expect "Equity Bank KES" in FX or modify the FX mapping.
+
     elif mode == 'foreign':
         parts = intermediary_account.split('-')
         if len(parts) < 2:
@@ -248,16 +279,10 @@ def reconcile_adjustment_row(
         bank_name_raw = parts[0].strip()
         currency_raw = parts[1].strip().upper()
 
-        expected_bank_name_adj = normalize_bank_key(bank_name_raw)
+        expected_bank_name_adj = bank_name_raw.lower() # Use raw or normalized if needed
         expected_currency_adj = currency_raw # Use currency from intermediary account for foreign mode
 
-        if not expected_bank_name_adj:
-            if debug:
-                st.warning(f"❌ Could not normalize bank name for foreign mode: '{bank_name_raw}'")
-            st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Could not normalize bank name for foreign mode'})
-            return False
-
-        if currency != currency_raw:
+        if currency.upper() != currency_raw.upper():
              if debug:
                  st.warning(f"⚠️ Currency mismatch: Adjustment currency '{currency}' vs Intermediary Account currency '{currency_raw}'")
     else:
@@ -267,49 +292,84 @@ def reconcile_adjustment_row(
         return False
 
     if debug:
-        st.info(f"   Expected (Normalized) Bank: '{expected_bank_name_adj}', Currency: '{expected_currency_adj}'")
+        st.info(f"   Expected (from Adjustment) Bank: '{expected_bank_name_adj}', Currency: '{expected_currency_adj}'")
 
     target_bank_df_key = None
-    for bank_df_key in all_bank_dfs.keys():
-        bank_df_key_lower = bank_df_key.lower() # e.g., 'kcb usd_csv'
+    # Iterate through the bank_dfs. The keys are now the user-selected standardized names (e.g., "Equity KES")
+    for bank_df_key in all_bank_dfs.keys(): # bank_df_key is now like "Equity KES"
+        # Parse the bank_df_key (e.g., "Equity KES") to get bank name and currency
+        key_parts = bank_df_key.split(' ')
+        if len(key_parts) >= 2:
+            bank_name_from_key = ' '.join(key_parts[:-1]).lower() # "equity"
+            currency_from_key = key_parts[-1].upper() # "KES"
+        else:
+            if debug:
+                st.warning(f"Skipping bank statement key '{bank_df_key}' due to unexpected format.")
+            continue
 
-        # Attempt to parse bank name and currency from the bank_df_key
-        # This assumes file names are like "bankname currency_csv" or "bankname currency.xlsx"
-        # Example: 'kcb usd_csv' -> 'kcb', 'usd'
-        # Example: 'absa kes_csv' -> 'absa', 'kes'
-        # Remove common file extensions and split by space or underscore
-        clean_file_key = bank_df_key_lower.replace('_csv', '').replace('.csv', '').replace('_xlsx', '').replace('.xlsx', '').replace('_', ' ')
-        
-        parts = clean_file_key.split(' ')
-        
-        bank_name_from_file = parts[0] if parts else ''
-        currency_from_file = parts[1] if len(parts) > 1 else ''
-
-        # Normalize the bank name from the file key
-        normalized_bank_name_from_file = normalize_bank_key(bank_name_from_file)
 
         if debug:
             st.info(f"   Checking bank statement file: '{bank_df_key}'")
-            st.info(f"     File parsed: Normalized Bank='{normalized_bank_name_from_file}', Currency='{currency_from_file}'")
-            st.info(f"     Adjustment: Normalized Bank='{expected_bank_name_adj}', Currency='{expected_currency_adj}'")
+            st.info(f"     File parsed: Bank='{bank_name_from_key}', Currency='{currency_from_key}'")
+            st.info(f"     Adjustment: Bank='{expected_bank_name_adj}', Currency='{expected_currency_adj}'")
 
-        # Primary matching: Normalized bank name and currency must match
-        bank_name_match_score = fuzz.ratio(expected_bank_name_adj, normalized_bank_name_from_file)
-        bank_name_match = (bank_name_match_score >= FUZZY_MATCH_THRESHOLD)
-        currency_match = (expected_currency_adj.lower() == currency_from_file.lower())
+        # Direct string matching now
+        # You might need to refine `expected_bank_name_adj` to match `bank_name_from_key`
+        # For example, if FX `Intermediary Account` is "Equity Bank" and `bank_name_from_key` is "equity",
+        # you'll need a way to standardize "Equity Bank" to "equity".
+        # A simple `normalize_bank_key` (without fuzzy) could still be useful here for FX side.
+
+        # Let's assume for now that if mode is 'local', intermediary_account directly contains the
+        # full bank name like "Equity Bank", and we need to map it to "equity" for comparison.
+        # If `normalize_bank_key` is still in the code and handles this mapping:
+        # normalized_adj_bank_name = normalize_bank_key(expected_bank_name_adj) # Use this if `normalize_bank_key` is kept for consistency
+                                                                            # but ensures no fuzzy logic.
+        
+        # Simpler direct comparison if normalize_bank_key is removed:
+        # For local, you might need a more robust way to get the short bank name from intermediary_account
+        # Example: if FX 'Intermediary Account' is 'Kenya Commercial Bank', you want to compare it to 'kcb'
+        # from the selected bank file name 'KCB KES'. This is where a non-fuzzy `normalize_bank_key`
+        # (or a direct mapping dictionary) is still valuable for the FX side.
+
+        # For this example, let's just make `expected_bank_name_adj` directly comparable
+        # This is a critical point: how `Intermediary Account` in FX maps to the chosen bank statement name.
+        # If the FX 'Intermediary Account' is like "Equity Bank", and your dropdown is "Equity KES",
+        # you need to standardize "Equity Bank" from FX data to "Equity" for matching.
+        # I'll reintroduce a simple `normalize_bank_key` that just uses `BANK_NAME_MAP` for prefix matching.
+
+        bank_name_from_adj_standardized = ""
+        if mode == 'local':
+            for long, short in BANK_NAME_MAP.items():
+                if expected_bank_name_adj.startswith(long):
+                    bank_name_from_adj_standardized = short
+                    break
+            # If no direct map found, just use the lowercased intermediary account
+            if not bank_name_from_adj_standardized:
+                bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0] # take first word
+        elif mode == 'foreign':
+             for long, short in BANK_NAME_MAP.items():
+                if expected_bank_name_adj.startswith(long):
+                    bank_name_from_adj_standardized = short
+                    break
+             if not bank_name_from_adj_standardized:
+                bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0] # take first word
+
+        # Primary matching: Standardized bank name and currency must match
+        bank_name_match = (bank_name_from_adj_standardized == bank_name_from_key)
+        currency_match = (expected_currency_adj.lower() == currency_from_key.lower())
 
         if bank_name_match and currency_match:
             target_bank_df_key = bank_df_key
             if debug:
-                st.success(f"   ✅ Match found for bank DF key: {target_bank_df_key} (Bank Name & Currency Match)")
+                st.success(f"   ✅ Match found for bank DF key: {target_bank_df_key} (Direct Bank Name & Currency Match)")
             break
         elif debug:
-            st.info(f"   ❌ No match for '{bank_df_key}': Bank Name Match ({bank_name_match}, score {bank_name_match_score}), Currency Match ({currency_match})")
+            st.info(f"   ❌ No match for '{bank_df_key}': Bank Name Match ({bank_name_match}), Currency Match ({currency_match})")
 
     if not target_bank_df_key:
         if debug:
-            st.error(f"   ❌ No matching bank statement found for this adjustment in any of the uploaded files based on normalized bank name and currency.")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (normalized bank name/currency mismatch)'})
+            st.error(f"   ❌ No matching bank statement found for this adjustment based on selected bank statement name and currency.")
+        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)'})
         return False
 
     bank_df = all_bank_dfs[target_bank_df_key]
@@ -522,55 +582,55 @@ def perform_reconciliation():
                     'Original_Row_Index': idx
                 })
 
-        st.session_state.df_matched_adjustments = pd.DataFrame(st.session_state.matched_adjustments_list)
-        st.session_state.df_unmatched_adjustments = pd.DataFrame(st.session_state.unmatched_adjustments_list)
-        st.session_state.df_unmatched_bank_records = pd.DataFrame(st.session_state.unmatched_bank_records_list)
+    st.session_state.df_matched_adjustments = pd.DataFrame(st.session_state.matched_adjustments_list)
+    st.session_state.df_unmatched_adjustments = pd.DataFrame(st.session_state.unmatched_adjustments_list)
+    st.session_state.df_unmatched_bank_records = pd.DataFrame(st.session_state.unmatched_bank_records_list)
 
-        st.success("Reconciliation Complete!")
-        st.write("---")
-        st.write(f"✅ Total Adjustments Matched: {len(st.session_state.df_matched_adjustments)}")
-        st.write(f"❌ Total Adjustments Unmatched: {len(st.session_state.df_unmatched_adjustments)}")
-        st.write(f"📄 Total Unmatched Bank Records: {len(st.session_state.df_unmatched_bank_records)}")
+    st.success("Reconciliation Complete!")
+    st.write("---")
+    st.write(f"✅ Total Adjustments Matched: {len(st.session_state.df_matched_adjustments)}")
+    st.write(f"❌ Total Adjustments Unmatched: {len(st.session_state.df_unmatched_adjustments)}")
+    st.write(f"📄 Total Unmatched Bank Records: {len(st.session_state.df_unmatched_bank_records)}")
 
-        # Display results in expanders
-        with st.expander("Matched Adjustments"):
-            if not st.session_state.df_matched_adjustments.empty:
-                st.dataframe(st.session_state.df_matched_adjustments)
-                st.download_button(
-                    label="Download Matched Adjustments",
-                    data=st.session_state.df_matched_adjustments.to_csv(index=False).encode('utf-8'),
-                    file_name="matched_adjustments.csv",
-                    mime="text/csv",
-                    key=f"download_{uuid.uuid4()}"
-                )
-            else:
-                st.info("No matched adjustments.")
+    # Display results in expanders
+    with st.expander("Matched Adjustments"):
+        if not st.session_state.df_matched_adjustments.empty:
+            st.dataframe(st.session_state.df_matched_adjustments)
+            st.download_button(
+                label="Download Matched Adjustments",
+                data=st.session_state.df_matched_adjustments.to_csv(index=False).encode('utf-8'),
+                file_name="matched_adjustments.csv",
+                mime="text/csv",
+                key=f"download_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No matched adjustments.")
 
-        with st.expander("Unmatched Adjustments"):
-            if not st.session_state.df_unmatched_adjustments.empty:
-                st.dataframe(st.session_state.df_unmatched_adjustments)
-                st.download_button(
-                    label="Download Unmatched Adjustments",
-                    data=st.session_state.df_unmatched_adjustments.to_csv(index=False).encode('utf-8'),
-                    file_name="unmatched_adjustments.csv",
-                    mime="text/csv",
-                    key=f"download_{uuid.uuid4()}"
-                )
-            else:
-                st.info("No unmatched adjustments.")
+    with st.expander("Unmatched Adjustments"):
+        if not st.session_state.df_unmatched_adjustments.empty:
+            st.dataframe(st.session_state.df_unmatched_adjustments)
+            st.download_button(
+                label="Download Unmatched Adjustments",
+                data=st.session_state.df_unmatched_adjustments.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_adjustments.csv",
+                mime="text/csv",
+                key=f"download_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No unmatched adjustments.")
 
-        with st.expander("Unmatched Bank Records"):
-            if not st.session_state.df_unmatched_bank_records.empty:
-                st.dataframe(st.session_state.df_unmatched_bank_records)
-                st.download_button(
-                    label="Download Unmatched Bank Records",
-                    data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
-                    file_name="unmatched_bank_records.csv",
-                    mime="text/csv",
-                    key=f"download_{uuid.uuid4()}"
-                )
-            else:
-                st.info("No unmatched bank records.")
+    with st.expander("Unmatched Bank Records"):
+        if not st.session_state.df_unmatched_bank_records.empty:
+            st.dataframe(st.session_state.df_unmatched_bank_records)
+            st.download_button(
+                label="Download Unmatched Bank Records",
+                data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_bank_records.csv",
+                mime="text/csv",
+                key=f"download_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No unmatched bank records.")
 
 def perform_data_analysis_and_visualizations():
     """Performs data analysis and generates visualizations based on reconciliation results."""
@@ -921,30 +981,47 @@ def fx_reconciliation_app():
             st.session_state.bank_uploaded_file_objs = bank_uploaded_files
             st.session_state.raw_bank_data_previews = {} # Reset for new uploads
             for i, file in enumerate(bank_uploaded_files):
-                file_key = file.name.lower().replace('.', '_')
-                st.session_state.raw_bank_data_previews[file_key] = {
+                # Use a more descriptive key for each file, not just the lowercased name
+                # This will be replaced by the user-selected name, but needed for initial state.
+                initial_file_key = f"file_{i}_{file.name.lower().replace('.', '_')}" 
+                st.session_state.raw_bank_data_previews[initial_file_key] = {
                     'file_obj': file,
                     'df_raw': pd.DataFrame(),
                     'sheet_names': [],
                     'selected_sheet': None,
-                    'column_mappings': {} # Store mappings per file
+                    'column_mappings': {}, # Store mappings per file
+                    'standardized_name': "" # NEW: To store the user's selected standardized name
                 }
                 # Immediately process file to get sheet names or initial df
                 if file.name.endswith('.xlsx'):
-                    st.session_state.raw_bank_data_previews[file_key]['sheet_names'] = get_excel_sheet_names(file)
-                    if st.session_state.raw_bank_data_previews[file_key]['sheet_names']:
-                        st.session_state.raw_bank_data_previews[file_key]['selected_sheet'] = st.session_state.raw_bank_data_previews[file_key]['sheet_names'][0]
-                        st.session_state.raw_bank_data_previews[file_key]['df_raw'] = process_uploaded_file(file, sheet_name=st.session_state.raw_bank_data_previews[file_key]['selected_sheet'])
+                    st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names'] = get_excel_sheet_names(file)
+                    if st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names']:
+                        st.session_state.raw_bank_data_previews[initial_file_key]['selected_sheet'] = st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names'][0]
+                        st.session_state.raw_bank_data_previews[initial_file_key]['df_raw'] = process_uploaded_file(file, sheet_name=st.session_state.raw_bank_data_previews[initial_file_key]['selected_sheet'])
                 else:
-                    st.session_state.raw_bank_data_previews[file_key]['df_raw'] = process_uploaded_file(file)
+                    st.session_state.raw_bank_data_previews[initial_file_key]['df_raw'] = process_uploaded_file(file)
 
         # Display mapping UI for each uploaded bank file
         if st.session_state.raw_bank_data_previews:
-            for file_key, data in st.session_state.raw_bank_data_previews.items():
+            # We need to preserve the order of uploaded files for consistent UI.
+            # Convert raw_bank_data_previews to a list of (key, data) tuples
+            # to iterate and re-assign after updates.
+            current_bank_data_previews = list(st.session_state.raw_bank_data_previews.items())
+
+            for i, (file_key, data) in enumerate(current_bank_data_previews):
                 # Use a unique expander for each file to maintain state
                 with st.expander(f"Configure {data['file_obj'].name}", expanded=True):
                     st.markdown(f"#### Configuration for {data['file_obj'].name}")
                     
+                    # NEW: Dropdown for standardized bank name
+                    selected_standardized_name = st.selectbox(
+                        f"Select Standardized Name for {data['file_obj'].name}:",
+                        options=[""] + PREDEFINED_BANK_CURRENCY_OPTIONS,
+                        index=PREDEFINED_BANK_CURRENCY_OPTIONS.index(data['standardized_name']) + 1 if data['standardized_name'] in PREDEFINED_BANK_CURRENCY_OPTIONS else 0,
+                        key=f"standardized_name_selector_{file_key}"
+                    )
+                    data['standardized_name'] = selected_standardized_name # Update in data dictionary
+
                     df_bank_raw = data['df_raw']
                     
                     if data['file_obj'].name.endswith('.xlsx'):
@@ -967,7 +1044,6 @@ def fx_reconciliation_app():
 
                         for expected_col, default_val in BANK_EXPECTED_COLUMNS.items():
                             initial_selection = current_file_mappings.get(expected_col) or next((col for col in df_bank_raw.columns if col.strip() in default_val), None)
-                            # initial_selection = current_file_mappings.get(expected_col) or (default_val if default_val in df_bank_raw.columns else "")
                             mapped_col = st.selectbox(
                                 f"Map '{expected_col}' (or main amount) to:",
                                 options=available_columns,
@@ -979,10 +1055,17 @@ def fx_reconciliation_app():
                     else:
                         st.error(f"Could not load bank data from {data['file_obj'].name}.")
             
+            # Update the session state with the potentially modified current_bank_data_previews
+            st.session_state.raw_bank_data_previews = {k: v for k, v in current_bank_data_previews}
+
             # Button to process all bank statements after mapping
             if st.button("Process All Bank Statements", key="process_all_bank_btn"):
                 st.session_state.bank_dfs = {}
                 for file_key, data in st.session_state.raw_bank_data_previews.items():
+                    if not data['standardized_name']:
+                        st.warning(f"Please select a standardized name for '{data['file_obj'].name}' before processing.")
+                        continue
+
                     df_to_process = data['df_raw'].copy()
                     renamed_cols_dict = {}
                     for expected_col, mapped_col in data['column_mappings'].items():
@@ -991,8 +1074,9 @@ def fx_reconciliation_app():
                     
                     df_to_process.rename(columns=renamed_cols_dict, inplace=True)
                     df_to_process.columns = df_to_process.columns.str.strip()
-                    st.session_state.bank_dfs[file_key] = df_to_process
-                    st.success(f"Processed and applied mappings for {data['file_obj'].name}!")
+                    # Use the standardized name as the key for the bank_dfs dictionary
+                    st.session_state.bank_dfs[data['standardized_name']] = df_to_process
+                    st.success(f"Processed and applied mappings for {data['file_obj'].name} as '{data['standardized_name']}'!")
                 st.write("All Bank Statements Processed!")
         else:
             st.session_state.bank_dfs = {}
@@ -1018,4 +1102,3 @@ def fx_reconciliation_app():
     st.header("Analysis and Visualizations")
     if st.button("Generate Analysis and Visualizations", key="analyze_btn"):
         perform_data_analysis_and_visualizations()
-
