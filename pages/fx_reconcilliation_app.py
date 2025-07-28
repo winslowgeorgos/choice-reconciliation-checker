@@ -440,8 +440,6 @@ def identify_unmatched_bank_records(bank_dfs: dict, matched_bank_keys: set, unma
 
         bank_df_copy['_ParsedDate'] = bank_df_copy[date_col].apply(parse_date)
 
-        st.dataframe(bank_df_copy.head())
-
         for idx, row in bank_df_copy.iterrows():
             row_date = row.get('_ParsedDate')
             if (pd.isna(row_date)): 
