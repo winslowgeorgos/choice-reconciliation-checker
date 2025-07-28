@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import io
-# from fuzzywuzzy import fuzz # Remove fuzzywuzzy imports
-# from fuzzywuzzy import process # Remove fuzzywuzzy imports
 import matplotlib.pyplot as plt
 import seaborn as sns
 import uuid
@@ -14,15 +12,18 @@ plt.rcParams['figure.figsize'] = (10, 6) # Default figure size
 
 # --- Constants and Global Mappings ---
 DATE_FORMATS = [
-    '%Y-%m-%d', '%Y/%m/%d', '%d.%m.%Y', '%Y.%m.%d',
-    '%d/%m/%Y', '%-d/%-m/%Y', '%-d.%-m.%Y', # Added -%d for non-padded day
-    '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', # Added datetime formats
-    '%d.%m.%Y %H:%M:%S', '%Y.%m.%d %H:%M:%S',
-    '%d/%m/%Y %H:%M:%S', '%-d/%-m/%Y %H:%M:%S',
-    '%-d.%-m.%Y %H:%M:%S'
+    '%Y-%m-%d',
+    '%Y/%m/%d',
+    '%d.%m.%Y',
+    '%Y.%m.%d',
+    '%d/%m/%Y',
+    '%Y-%m-%d %H:%M:%S',
+    '%Y/%m/%d %H:%M:%S',
+    '%d.%m.%Y %H:%M:%S',
+    '%Y.%m.%d %H:%M:%S',
+    '%d/%m/%Y %H:%M:%S'
 ]
 
-# FUZZY_MATCH_THRESHOLD = 60 # Remove this
 
 # Simplified BANK_NAME_MAP for normalization (if still needed for other purposes, e.g., display)
 # For direct matching, we'll use predefined options
@@ -42,7 +43,7 @@ BANK_NAME_MAP = {
 # This list should be exhaustive for all possible bank statements you expect.
 PREDEFINED_BANK_CURRENCY_OPTIONS = [
     "Absa KES", "Absa USD", "Absa EUR", "Absa GBP",
-    "CBK KES", "CBK USD",
+    "CBK KES", "CBK USD", "CBK EUR",
     "Equity KES", "Equity USD", "Equity EUR", "Equity GBP",
     "I&M KES", "I&M USD",
     "KCB KES", "KCB USD",
@@ -80,15 +81,15 @@ BANK_EXPECTED_COLUMNS = {
 
 def parse_date(date_str_raw):
     """Parses a date string into a datetime object using predefined formats."""
-    if pd.isna(date_str_raw):
+    if pd.isna(date_str_raw) or date_str_raw == pd.NaT:
         return None
-    if isinstance(date_str_raw, datetime): # Already a datetime object
+    if isinstance(date_str_raw, datetime):
         return date_str_raw
     if not isinstance(date_str_raw, str):
-        return None
+        date_str_raw = str(date_str_raw)
 
-    # Attempt to parse as date only, stripping time if present
-    date_str = str(date_str_raw).split('.')[0].strip() # Remove milliseconds if present
+    # Strip time part if present (e.g., "18.07.2025 12:34:56" => "18.07.2025")
+    date_str = date_str_raw.partition(" ")[0].strip()
 
     for fmt in DATE_FORMATS:
         try:
@@ -96,6 +97,7 @@ def parse_date(date_str_raw):
         except ValueError:
             continue
     return None
+
 
 def safe_float(x):
     """Safely converts a value to a float, handling commas, non-numeric inputs, and ensuring consistency."""
@@ -106,25 +108,6 @@ def safe_float(x):
         return float(cleaned_x)
     except (ValueError, TypeError):
         return None
-
-# def normalize_bank_key(raw_key): # Remove or modify if still used elsewhere
-#     """Normalizes bank names to a consistent short code, using fuzzy matching."""
-#     raw_key_lower = str(raw_key).lower().strip()
-    
-#     # First, try direct replacement from BANK_NAME_MAP
-#     for long, short in BANK_NAME_MAP.items():
-#         if raw_key_lower.startswith(long):
-#             return short # Return the short code if a direct prefix match is found
-
-#     # If no direct match, try fuzzy matching against known short codes/replacements
-#     # Create a list of all possible normalized bank names for fuzzy matching
-#     all_normalized_bank_names = list(set(BANK_NAME_MAP.values())) # Use only the short codes for fuzzy matching targets
-
-#     match = process.extractOne(raw_key_lower, all_normalized_bank_names, scorer=fuzz.ratio)
-#     if match and match[1] >= FUZZY_MATCH_THRESHOLD:
-#         return match[0] # Return the best fuzzy matched normalized name
-    
-#     return raw_key_lower # Return original if no good fuzzy match or direct map
 
 def resolve_amount_column(columns, operation):
     """Identifies the amount column based on the operation (credit/debit)."""
@@ -207,15 +190,21 @@ def reconcile_adjustment_row(
     mode: str, # 'local' or 'foreign'
     date_tolerance_days: int = 3,
     amount_tolerance: float = 1.0, # Absolute tolerance for amount matching
-    debug: bool = False # Control verbose printing
+    debug: bool = False, # Control verbose printing
+    matched_adjustments_list: list = None,
+    unmatched_adjustments_list: list = None,
+    matched_bank_keys: set = None
 ) -> bool:
     """
     Attempts to reconcile a single adjustment row against all uploaded bank statements.
     Returns True if a match is found, False otherwise.
-    Appends to global matched_adjustments_list or unmatched_adjustments_list lists.
+    Appends to provided matched_adjustments_list or unmatched_adjustments_list lists.
     """
+    if matched_adjustments_list is None or unmatched_adjustments_list is None or matched_bank_keys is None:
+        raise ValueError("Matched/unmatched lists and matched_bank_keys set must be provided.")
+
     if debug:
-        st.info(f"🔍 Processing Adjustment (Amount: {adj_row.get('Amount')}, Date: {adj_row.get('Completed At')}, Bank: {adj_row.get('Intermediary Account')}, Currency: {adj_row.get('Currency')})")
+        st.info(f"🔍 Processing Adjustment (Amount: {adj_row.get('Amount')}, Date: {adj_row.get('Completed At')}, Bank: {adj_row.get('Intermediary Account')}, Currency: {adj_row.get('Currency')}) for mode '{mode}'")
 
     amount = safe_float(adj_row.get('Amount'))
     if amount is None or pd.isna(amount) or abs(amount) < 0.01:
@@ -235,7 +224,7 @@ def reconcile_adjustment_row(
     if operation not in ['credit', 'debit']:
         if debug:
             st.warning(f"❌ Skipping row due to unrecognised operation: '{operation}'")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Unrecognised operation: {operation}'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Unrecognised operation: {operation}'})
         return False
 
     status = str(adj_row.get('Status', '')).strip().lower()
@@ -243,7 +232,7 @@ def reconcile_adjustment_row(
        (mode == 'foreign' and status != 'completed'):
         if debug:
             st.warning(f"❌ Skipping row due for mode '{mode}' and status '{status}'")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Skipped due to status "{status}" for mode "{mode}"'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Skipped due to status "{status}" for mode "{mode}"'})
         return False
 
     intermediary_account = str(adj_row.get('Intermediary Account', '')).strip()
@@ -253,34 +242,21 @@ def reconcile_adjustment_row(
     expected_currency_adj = None
 
     if mode == 'local':
-        # For local mode, derive bank name from intermediary account and currency from 'Currency'
-        # Assume intermediary_account can be directly mapped or contains the bank name
-        # For simplicity, let's assume `Intermediary Account` in FX Tracker is a direct bank name
-        # We need a way to map 'Intermediary Account' to the standardized bank names.
-        # This might require a small mapping or direct string comparison if the FX data is clean.
-        # For now, let's just use the raw intermediary_account and currency for comparison
-        # against the user-selected bank_df_key.
         expected_bank_name_adj = intermediary_account.lower()
         expected_currency_adj = currency.upper()
-
-        # A potential improvement here: if FX's `Intermediary Account` is "Equity Bank", you'd want to
-        # map it to "Equity" for comparison with the "Equity KES" / "Equity USD" keys.
-        # This can be done by using BANK_NAME_MAP for the `Intermediary Account`
-        # if `normalize_bank_key` (modified to not use fuzzy) is still desired.
-        # For now, let's keep it simple and expect "Equity Bank KES" in FX or modify the FX mapping.
 
     elif mode == 'foreign':
         parts = intermediary_account.split('-')
         if len(parts) < 2:
             if debug:
                 st.warning(f"❌ Skipping row due to malformed foreign intermediary account: '{intermediary_account}'")
-            st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Malformed foreign intermediary account'})
+            unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Malformed foreign intermediary account'})
             return False
         bank_name_raw = parts[0].strip()
         currency_raw = parts[1].strip().upper()
 
-        expected_bank_name_adj = bank_name_raw.lower() # Use raw or normalized if needed
-        expected_currency_adj = currency_raw # Use currency from intermediary account for foreign mode
+        expected_bank_name_adj = bank_name_raw.lower()
+        expected_currency_adj = currency_raw
 
         if currency.upper() != currency_raw.upper():
              if debug:
@@ -288,73 +264,44 @@ def reconcile_adjustment_row(
     else:
         if debug:
             st.warning(f"❌ Invalid reconciliation mode: {mode}")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Invalid mode: {mode}'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Invalid mode: {mode}'})
         return False
 
     if debug:
         st.info(f"   Expected (from Adjustment) Bank: '{expected_bank_name_adj}', Currency: '{expected_currency_adj}'")
 
     target_bank_df_key = None
-    # Iterate through the bank_dfs. The keys are now the user-selected standardized names (e.g., "Equity KES")
-    for bank_df_key in all_bank_dfs.keys(): # bank_df_key is now like "Equity KES"
-        # Parse the bank_df_key (e.g., "Equity KES") to get bank name and currency
+    for bank_df_key in all_bank_dfs.keys():
         key_parts = bank_df_key.split(' ')
         if len(key_parts) >= 2:
-            bank_name_from_key = ' '.join(key_parts[:-1]).lower() # "equity"
-            currency_from_key = key_parts[-1].upper() # "KES"
+            bank_name_from_key = ' '.join(key_parts[:-1]).lower()
+            currency_from_key = key_parts[-1].upper()
         else:
             if debug:
                 st.warning(f"Skipping bank statement key '{bank_df_key}' due to unexpected format.")
             continue
-
 
         if debug:
             st.info(f"   Checking bank statement file: '{bank_df_key}'")
             st.info(f"     File parsed: Bank='{bank_name_from_key}', Currency='{currency_from_key}'")
             st.info(f"     Adjustment: Bank='{expected_bank_name_adj}', Currency='{expected_currency_adj}'")
 
-        # Direct string matching now
-        # You might need to refine `expected_bank_name_adj` to match `bank_name_from_key`
-        # For example, if FX `Intermediary Account` is "Equity Bank" and `bank_name_from_key` is "equity",
-        # you'll need a way to standardize "Equity Bank" to "equity".
-        # A simple `normalize_bank_key` (without fuzzy) could still be useful here for FX side.
-
-        # Let's assume for now that if mode is 'local', intermediary_account directly contains the
-        # full bank name like "Equity Bank", and we need to map it to "equity" for comparison.
-        # If `normalize_bank_key` is still in the code and handles this mapping:
-        # normalized_adj_bank_name = normalize_bank_key(expected_bank_name_adj) # Use this if `normalize_bank_key` is kept for consistency
-                                                                            # but ensures no fuzzy logic.
-        
-        # Simpler direct comparison if normalize_bank_key is removed:
-        # For local, you might need a more robust way to get the short bank name from intermediary_account
-        # Example: if FX 'Intermediary Account' is 'Kenya Commercial Bank', you want to compare it to 'kcb'
-        # from the selected bank file name 'KCB KES'. This is where a non-fuzzy `normalize_bank_key`
-        # (or a direct mapping dictionary) is still valuable for the FX side.
-
-        # For this example, let's just make `expected_bank_name_adj` directly comparable
-        # This is a critical point: how `Intermediary Account` in FX maps to the chosen bank statement name.
-        # If the FX 'Intermediary Account' is like "Equity Bank", and your dropdown is "Equity KES",
-        # you need to standardize "Equity Bank" from FX data to "Equity" for matching.
-        # I'll reintroduce a simple `normalize_bank_key` that just uses `BANK_NAME_MAP` for prefix matching.
-
         bank_name_from_adj_standardized = ""
-        if mode == 'local':
-            for long, short in BANK_NAME_MAP.items():
-                if expected_bank_name_adj.startswith(long):
-                    bank_name_from_adj_standardized = short
-                    break
-            # If no direct map found, just use the lowercased intermediary account
-            if not bank_name_from_adj_standardized:
-                bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0] # take first word
-        elif mode == 'foreign':
-             for long, short in BANK_NAME_MAP.items():
-                if expected_bank_name_adj.startswith(long):
-                    bank_name_from_adj_standardized = short
-                    break
-             if not bank_name_from_adj_standardized:
-                bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0] # take first word
+        # Using the simplified direct mapping from BANK_NAME_MAP for the FX side's intermediary account
+        # to match the standardized bank names chosen for bank statements.
+        # This assumes 'intermediary_account' in FX Tracker is a human-readable bank name.
+        matched_bank_name = False
+        for long, short in BANK_NAME_MAP.items():
+            if expected_bank_name_adj.startswith(long):
+                bank_name_from_adj_standardized = short
+                matched_bank_name = True
+                break
+        
+        if not matched_bank_name:
+            # If no direct map found, try to extract the first word or use as is
+            bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0]
 
-        # Primary matching: Standardized bank name and currency must match
+
         bank_name_match = (bank_name_from_adj_standardized == bank_name_from_key)
         currency_match = (expected_currency_adj.lower() == currency_from_key.lower())
 
@@ -369,14 +316,14 @@ def reconcile_adjustment_row(
     if not target_bank_df_key:
         if debug:
             st.error(f"   ❌ No matching bank statement found for this adjustment based on selected bank statement name and currency.")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)'})
         return False
 
     bank_df = all_bank_dfs[target_bank_df_key]
     if bank_df.empty:
         if debug:
             st.warning(f"⚠️ Bank statement '{target_bank_df_key}' is empty.")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Target bank statement ({target_bank_df_key}) is empty'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Target bank statement ({target_bank_df_key}) is empty'})
         return False
 
     bank_df_columns = bank_df.columns.tolist()
@@ -390,7 +337,7 @@ def reconcile_adjustment_row(
     if not date_column or not amount_column:
         if debug:
             st.error("❌ Missing date or amount column in bank data for reconciliation")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Missing date/amount column in bank statement'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Missing date/amount column in bank statement'})
         return False
 
     # Convert bank statement date column to datetime objects
@@ -420,83 +367,60 @@ def reconcile_adjustment_row(
             st.info(f"  Comparing bank amount {bank_amt} (from column '{amount_column}') with adjustment amount {amount}")
 
         if abs(bank_amt - amount) <= amount_tolerance:
+            bank_record_key_operation = 'debit' if 'debit' in amount_column.lower() or bank_amt < 0 else 'credit'
+            if 'credit' in amount_column.lower(): # Specific check for credit column
+                bank_record_key_operation = 'credit'
+            
             # Generate a unique key for the bank record to mark it as matched
             bank_record_key = (
                 target_bank_df_key,
                 bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
                 round(amount, 2),
-                operation
+                bank_record_key_operation # Use the determined operation for the key
             )
-            # if bank_record_key not in st.session_state.matched_bank_keys:
-            st.session_state.matched_adjustments_list.append({
-                'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
-                'Adjustment_Amount': amount,
-                'Adjustment_Operation': operation,
-                'Adjustment_Intermediary_Account': intermediary_account,
-                'Adjustment_Currency': currency,
-                'Bank_Table': target_bank_df_key,
-                'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
-                'Bank_Statement_Amount': bank_amt,
-                'Bank_Matched_Column': amount_column,
-                'Bank_Row_Index': idx
-            })
-            st.session_state.matched_bank_keys.add(bank_record_key)
-            if debug:
-                st.success("✅ Match found and recorded!")
-            match_found = True
-            break
-            # else:
-            #     if debug:
-            #         st.warning("⚠️ Potential duplicate match skipped (bank record already matched).")
-            #     continue
+            
+            # Ensure we don't double-count a bank record if it matches multiple adjustments
+            if bank_record_key not in matched_bank_keys:
+                matched_adjustments_list.append({
+                    'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
+                    'Adjustment_Amount': amount,
+                    'Adjustment_Operation': operation,
+                    'Adjustment_Intermediary_Account': intermediary_account,
+                    'Adjustment_Currency': currency,
+                    'Bank_Table': target_bank_df_key,
+                    'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
+                    'Bank_Statement_Amount': bank_amt,
+                    'Bank_Matched_Column': amount_column,
+                    'Bank_Row_Index': idx
+                })
+                matched_bank_keys.add(bank_record_key)
+                if debug:
+                    st.success("✅ Match found and recorded!")
+                match_found = True
+                break
+            else:
+                if debug:
+                    st.info(f"  Bank record {bank_record_key} already matched. Skipping duplicate.")
+                # We count this adjustment as unmatched if its corresponding bank record is already used
+                # or we might want to specifically track this as a "potential duplicate" if needed.
+                # For now, let's treat it as unmatched since its target bank entry is taken.
+                # unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Bank record already matched to another adjustment'})
+                continue # Continue searching for another match for this adjustment
+            
 
     if not match_found:
         if debug:
             st.error("❌ No amount match found within tolerance for this adjustment.")
-        st.session_state.unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No amount match in bank statement'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No amount match in bank statement'})
     return match_found
 
 
-def perform_reconciliation():
-    """Main function to perform the reconciliation process."""
-    st.session_state.matched_adjustments_list = []
-    st.session_state.unmatched_adjustments_list = []
-    st.session_state.unmatched_bank_records_list = []
-    st.session_state.matched_bank_keys = set()
-
-    if st.session_state.fx_trade_df.empty:
-        st.warning("FX Data is empty. Please upload and process FX Tracker data.")
-        return
-    if not st.session_state.bank_dfs:
-        st.warning("No Bank Statements processed. Please upload and process bank data.")
-        return
-
-    st.subheader("--- Starting Reconciliation Process ---")
-    current_mode = st.session_state.reconciliation_mode
-    st.info(f"Reconciliation Mode: {current_mode.upper()}")
-
-    # Display which bank statements are loaded for reconciliation
-    if st.session_state.bank_dfs:
-        st.info(f"Bank statements loaded for reconciliation: {', '.join(st.session_state.bank_dfs.keys())}")
-    else:
-        st.warning("No bank statements available for reconciliation.")
-        return
-
-    # Process all adjustments first
-    for index, row in st.session_state.fx_trade_df.iterrows():
-        reconcile_adjustment_row(
-            adj_row=row,
-            all_bank_dfs=st.session_state.bank_dfs,
-            mode=current_mode,
-            date_tolerance_days=3,
-            amount_tolerance=1.0,
-            debug=st.session_state.debug_mode # Use the debug mode checkbox state
-        )
-
-    st.subheader("--- Identifying Unmatched Bank Records ---")
-    for bank_key, bank_df in st.session_state.bank_dfs.items():
+def identify_unmatched_bank_records(bank_dfs: dict, matched_bank_keys: set, unmatched_bank_records_list: list, debug: bool):
+    """Identifies bank records that were not matched by any adjustment."""
+    for bank_key, bank_df in bank_dfs.items():
         if bank_df.empty:
-            st.warning(f"Skipping empty bank statement: {bank_key}")
+            if debug:
+                st.warning(f"Skipping empty bank statement: {bank_key}")
             continue
 
         bank_df_copy = bank_df.copy()
@@ -507,7 +431,7 @@ def perform_reconciliation():
 
         if not date_col or not amount_cols or not description_col:
             st.warning(
-                f"Skipping '{bank_key}': Missing required columns:"
+                f"Skipping '{bank_key}': Missing required columns for unmatched bank record identification:"
                 f"{' Date,' if not date_col else ''}"
                 f"{' Amount,' if not amount_cols else ''}"
                 f"{' Description' if not description_col else ''}".rstrip(',')
@@ -516,10 +440,18 @@ def perform_reconciliation():
 
         bank_df_copy['_ParsedDate'] = bank_df_copy[date_col].apply(parse_date)
 
+        st.dataframe(bank_df_copy.head())
+
         for idx, row in bank_df_copy.iterrows():
             row_date = row.get('_ParsedDate')
-            if not isinstance(row_date, datetime) or pd.isna(row_date):
-                st.warning(f"Row {idx} in '{bank_key}' has invalid or missing parsed date: {row.get(date_col)}")
+            if (pd.isna(row_date)): 
+                # if debug:
+                st.warning(f"Row {idx} in '{bank_key}' is missing parsed date: {row.get(date_col)}")
+                continue
+
+            if not isinstance(row_date, datetime):
+                # if debug:
+                st.warning(f"Row {idx} in '{bank_key}' has invalid or missing parsed date: {parse_date(str(row.get(date_col)))}")
                 continue
 
             description = str(row.get(description_col, '')).strip()
@@ -536,7 +468,7 @@ def perform_reconciliation():
                     operation_for_key = 'credit'
                 elif 'debit' in amt_col.lower():
                     operation_for_key = 'debit'
-
+                
                 bank_record_key = (
                     bank_key,
                     row_date.strftime('%Y-%m-%d'),
@@ -544,7 +476,7 @@ def perform_reconciliation():
                     operation_for_key
                 )
 
-                if bank_record_key in st.session_state.matched_bank_keys:
+                if bank_record_key in matched_bank_keys:
                     is_matched_in_any_way = True
                     break
 
@@ -560,20 +492,9 @@ def perform_reconciliation():
                     final_amt_col_for_unmatched = amt_col
                     final_amt_val_for_unmatched = round(amt_val, 2)
                     break
-
-            unmatched_reason = f"""
-            ➤ Unmatched Bank Entry Detected:
-            • Bank: {bank_key}
-            • Row Index: {idx}
-            • Date: {row_date.strftime('%Y-%m-%d')}
-            • Amount: {final_amt_val_for_unmatched}
-            • Column: {final_amt_col_for_unmatched}
-            • Description: {description or 'N/A'}
-            • Match Key Tried: {bank_record_key}
-            """
-
+            
             if final_amt_val_for_unmatched is not None:
-                st.session_state.unmatched_bank_records_list.append({
+                unmatched_bank_records_list.append({
                     'Bank_Table': bank_key,
                     'Date': row_date.strftime('%Y-%m-%d'),
                     'Description': description,
@@ -582,115 +503,257 @@ def perform_reconciliation():
                     'Original_Row_Index': idx
                 })
 
-    st.session_state.df_matched_adjustments = pd.DataFrame(st.session_state.matched_adjustments_list)
-    st.session_state.df_unmatched_adjustments = pd.DataFrame(st.session_state.unmatched_adjustments_list)
-    st.session_state.df_unmatched_bank_records = pd.DataFrame(st.session_state.unmatched_bank_records_list)
+def perform_reconciliation_for_mode(fx_df: pd.DataFrame, all_bank_dfs: dict, mode: str, debug: bool):
+    """Performs reconciliation for a specific FX mode (local or foreign)."""
+    st.subheader(f"--- Starting Reconciliation for {mode.upper()} FX Data ---")
 
-    st.success("Reconciliation Complete!")
+    # Initialize mode-specific session state lists/sets
+    st.session_state[f'matched_adjustments_list_{mode}'] = []
+    st.session_state[f'unmatched_adjustments_list_{mode}'] = []
+    st.session_state[f'matched_bank_keys_{mode}'] = set() # This set tracks bank records matched by THIS mode
+
+    if fx_df.empty:
+        st.warning(f"{mode.upper()} FX Data is empty. Skipping reconciliation for this mode.")
+        return
+
+    if not all_bank_dfs:
+        st.warning("No Bank Statements processed. Please upload and process bank data.")
+        return
+
+    st.info(f"Reconciliation Mode: {mode.upper()}")
+    st.info(f"Bank statements loaded for reconciliation: {', '.join(all_bank_dfs.keys())}")
+
+    # Process all adjustments for the current mode
+    for index, row in fx_df.iterrows():
+        reconcile_adjustment_row(
+            adj_row=row,
+            all_bank_dfs=all_bank_dfs,
+            mode=mode,
+            date_tolerance_days=3,
+            amount_tolerance=1.0,
+            debug=debug,
+            matched_adjustments_list=st.session_state[f'matched_adjustments_list_{mode}'],
+            unmatched_adjustments_list=st.session_state[f'unmatched_adjustments_list_{mode}'],
+            matched_bank_keys=st.session_state[f'matched_bank_keys_{mode}']
+        )
+    
+    # After processing all adjustments for the current mode, identify unmatched bank records
+    # Pass the matched_bank_keys specific to this mode.
+    # Note: unmatched bank records are conceptually "unmatched across ALL FX data"
+    # To properly implement this, we need a GLOBAL set of matched bank keys.
+    # For now, let's just combine the keys from both reconciliation passes.
+    # A simpler approach: Identify unmatched bank records *after* both local and foreign FX have been processed.
+    # So, we'll move `identify_unmatched_bank_records` to the main `perform_reconciliation` function.
+
+    st.session_state[f'df_matched_adjustments_{mode}'] = pd.DataFrame(st.session_state[f'matched_adjustments_list_{mode}'])
+    st.session_state[f'df_unmatched_adjustments_{mode}'] = pd.DataFrame(st.session_state[f'unmatched_adjustments_list_{mode}'])
+
+    st.success(f"Reconciliation for {mode.upper()} FX Data Complete!")
+    st.write(f"--- {mode.upper()} Reconciliation Summary ---")
+    st.write(f"✅ Total {mode.upper()} Adjustments Matched: {len(st.session_state[f'df_matched_adjustments_{mode}'])}")
+    st.write(f"❌ Total {mode.upper()} Adjustments Unmatched: {len(st.session_state[f'df_unmatched_adjustments_{mode}'])}")
+
+
+def perform_full_reconciliation():
+    """Main function to perform the reconciliation process for both local and foreign FX data."""
+    st.subheader("--- Overall Reconciliation Process ---")
+
+    # Initialize global lists for unmatched bank records and combined matched bank keys
+    st.session_state.unmatched_bank_records_list_global = []
+    st.session_state.matched_bank_keys_global = set()
+
+    if not st.session_state.bank_dfs:
+        st.warning("No Bank Statements processed. Please upload and process bank data.")
+        return
+
+    # Perform reconciliation for LOCAL FX data
+    perform_reconciliation_for_mode(
+        fx_df=st.session_state.fx_trade_df_local,
+        all_bank_dfs=st.session_state.bank_dfs,
+        mode='local',
+        debug=st.session_state.debug_mode
+    )
+    # Add keys from local reconciliation to global set
+    st.session_state.matched_bank_keys_global.update(st.session_state.get('matched_bank_keys_local', set()))
+
+    # Perform reconciliation for FOREIGN FX data
+    perform_reconciliation_for_mode(
+        fx_df=st.session_state.fx_trade_df_foreign,
+        all_bank_dfs=st.session_state.bank_dfs,
+        mode='foreign',
+        debug=st.session_state.debug_mode
+    )
+    # Add keys from foreign reconciliation to global set
+    st.session_state.matched_bank_keys_global.update(st.session_state.get('matched_bank_keys_foreign', set()))
+
+    st.subheader("--- Identifying Global Unmatched Bank Records ---")
+    identify_unmatched_bank_records(
+        bank_dfs=st.session_state.bank_dfs,
+        matched_bank_keys=st.session_state.matched_bank_keys_global,
+        unmatched_bank_records_list=st.session_state.unmatched_bank_records_list_global,
+        debug=st.session_state.debug_mode
+    )
+    st.session_state.df_unmatched_bank_records = pd.DataFrame(st.session_state.unmatched_bank_records_list_global)
+
+    st.success("Overall Reconciliation Complete!")
     st.write("---")
-    st.write(f"✅ Total Adjustments Matched: {len(st.session_state.df_matched_adjustments)}")
-    st.write(f"❌ Total Adjustments Unmatched: {len(st.session_state.df_unmatched_adjustments)}")
-    st.write(f"📄 Total Unmatched Bank Records: {len(st.session_state.df_unmatched_bank_records)}")
+    st.write(f"📄 Total Unmatched Bank Records (Global): {len(st.session_state.df_unmatched_bank_records)}")
 
     # Display results in expanders
-    with st.expander("Matched Adjustments"):
-        if not st.session_state.df_matched_adjustments.empty:
-            st.dataframe(st.session_state.df_matched_adjustments)
+    st.markdown("### Reconciliation Results Summary")
+
+    with st.expander("Local FX Matched Adjustments"):
+        if not st.session_state.df_matched_adjustments_local.empty:
+            st.dataframe(st.session_state.df_matched_adjustments_local)
             st.download_button(
-                label="Download Matched Adjustments",
-                data=st.session_state.df_matched_adjustments.to_csv(index=False).encode('utf-8'),
-                file_name="matched_adjustments.csv",
+                label="Download Local Matched Adjustments",
+                data=st.session_state.df_matched_adjustments_local.to_csv(index=False).encode('utf-8'),
+                file_name="matched_adjustments_local.csv",
                 mime="text/csv",
-                key=f"download_{uuid.uuid4()}"
+                key=f"download_matched_local_{uuid.uuid4()}"
             )
         else:
-            st.info("No matched adjustments.")
+            st.info("No local matched adjustments.")
 
-    with st.expander("Unmatched Adjustments"):
-        if not st.session_state.df_unmatched_adjustments.empty:
-            st.dataframe(st.session_state.df_unmatched_adjustments)
+    with st.expander("Local FX Unmatched Adjustments"):
+        if not st.session_state.df_unmatched_adjustments_local.empty:
+            st.dataframe(st.session_state.df_unmatched_adjustments_local)
             st.download_button(
-                label="Download Unmatched Adjustments",
-                data=st.session_state.df_unmatched_adjustments.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_adjustments.csv",
+                label="Download Local Unmatched Adjustments",
+                data=st.session_state.df_unmatched_adjustments_local.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_adjustments_local.csv",
                 mime="text/csv",
-                key=f"download_{uuid.uuid4()}"
+                key=f"download_unmatched_local_{uuid.uuid4()}"
             )
         else:
-            st.info("No unmatched adjustments.")
+            st.info("No local unmatched adjustments.")
+    
+    with st.expander("Foreign FX Matched Adjustments"):
+        if not st.session_state.df_matched_adjustments_foreign.empty:
+            st.dataframe(st.session_state.df_matched_adjustments_foreign)
+            st.download_button(
+                label="Download Foreign Matched Adjustments",
+                data=st.session_state.df_matched_adjustments_foreign.to_csv(index=False).encode('utf-8'),
+                file_name="matched_adjustments_foreign.csv",
+                mime="text/csv",
+                key=f"download_matched_foreign_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No foreign matched adjustments.")
 
-    with st.expander("Unmatched Bank Records"):
+    with st.expander("Foreign FX Unmatched Adjustments"):
+        if not st.session_state.df_unmatched_adjustments_foreign.empty:
+            st.dataframe(st.session_state.df_unmatched_adjustments_foreign)
+            st.download_button(
+                label="Download Foreign Unmatched Adjustments",
+                data=st.session_state.df_unmatched_adjustments_foreign.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_adjustments_foreign.csv",
+                mime="text/csv",
+                key=f"download_unmatched_foreign_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No foreign unmatched adjustments.")
+
+    with st.expander("Unmatched Bank Records (Global)"):
         if not st.session_state.df_unmatched_bank_records.empty:
             st.dataframe(st.session_state.df_unmatched_bank_records)
             st.download_button(
-                label="Download Unmatched Bank Records",
+                label="Download Unmatched Bank Records (Global)",
                 data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_bank_records.csv",
+                file_name="unmatched_bank_records_global.csv",
                 mime="text/csv",
-                key=f"download_{uuid.uuid4()}"
+                key=f"download_unmatched_bank_global_{uuid.uuid4()}"
             )
         else:
-            st.info("No unmatched bank records.")
+            st.info("No unmatched bank records (global).")
+
 
 def perform_data_analysis_and_visualizations():
     """Performs data analysis and generates visualizations based on reconciliation results."""
     st.subheader("Data Analysis and Visualizations")
 
-    if st.session_state.df_matched_adjustments.empty and \
-       st.session_state.df_unmatched_adjustments.empty and \
-       st.session_state.df_unmatched_bank_records.empty:
+    all_empty = (
+        st.session_state.df_matched_adjustments_local.empty and
+        st.session_state.df_unmatched_adjustments_local.empty and
+        st.session_state.df_matched_adjustments_foreign.empty and
+        st.session_state.df_unmatched_adjustments_foreign.empty and
+        st.session_state.df_unmatched_bank_records.empty
+    )
+    if all_empty:
         st.warning("No data available for analysis. Please run reconciliation first.")
         return
 
+    # Combine data for overall analysis where appropriate
+    combined_unmatched_adjustments = pd.concat([
+        st.session_state.df_unmatched_adjustments_local.assign(Mode='Local FX'),
+        st.session_state.df_unmatched_adjustments_foreign.assign(Mode='Foreign FX')
+    ], ignore_index=True)
+
+    combined_matched_adjustments = pd.concat([
+        st.session_state.df_matched_adjustments_local.assign(Mode='Local FX'),
+        st.session_state.df_matched_adjustments_foreign.assign(Mode='Foreign FX')
+    ], ignore_index=True)
+
+
     # 7.1 Reconciliation Overview
-    st.markdown("### 7.1 Reconciliation Overview")
+    st.markdown("### 7.1 Reconciliation Overview (Combined)")
     reconciliation_status = pd.DataFrame({
-        'Category': ['Matched Adjustments', 'Unmatched Adjustments', 'Unmatched Bank Records'],
-        'Count': [len(st.session_state.df_matched_adjustments),
-                  len(st.session_state.df_unmatched_adjustments),
-                  len(st.session_state.df_unmatched_bank_records)]
+        'Category': [
+            'Matched Local Adjustments', 'Unmatched Local Adjustments',
+            'Matched Foreign Adjustments', 'Unmatched Foreign Adjustments',
+            'Unmatched Bank Records'
+        ],
+        'Count': [
+            len(st.session_state.df_matched_adjustments_local),
+            len(st.session_state.df_unmatched_adjustments_local),
+            len(st.session_state.df_matched_adjustments_foreign),
+            len(st.session_state.df_unmatched_adjustments_foreign),
+            len(st.session_state.df_unmatched_bank_records)
+        ]
     })
     st.write("**Counts of Matched/Unmatched Records:**")
     st.dataframe(reconciliation_status)
 
-    fig1, ax1 = plt.subplots(figsize=(8, 6))
+    fig1, ax1 = plt.subplots(figsize=(12, 7))
     sns.barplot(x='Category', y='Count', data=reconciliation_status, palette='viridis', ax=ax1)
-    ax1.set_title('Overview of Reconciliation Status')
+    ax1.set_title('Overview of Reconciliation Status (Combined FX)')
     ax1.set_ylabel('Number of Records')
     ax1.set_xlabel('')
+    ax1.tick_params(axis='x', rotation=45)
     ax1.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
     st.pyplot(fig1)
 
-    # 7.2 Unmatched Adjustments Analysis
-    if not st.session_state.df_unmatched_adjustments.empty:
-        st.markdown("### 7.2 Unmatched Adjustments Analysis")
-        st.write("**Top Reasons for Unmatched Adjustments:**")
-        reason_counts = st.session_state.df_unmatched_adjustments['Reason'].value_counts().reset_index()
-        reason_counts.columns = ['Reason', 'Count']
-        st.dataframe(reason_counts)
+    # 7.2 Unmatched Adjustments Analysis (Combined)
+    if not combined_unmatched_adjustments.empty:
+        st.markdown("### 7.2 Unmatched Adjustments Analysis (Combined FX)")
+        st.write("**Top Reasons for Unmatched Adjustments by Mode:**")
+        reason_counts_by_mode = combined_unmatched_adjustments.groupby(['Mode', 'Reason']).size().reset_index(name='Count')
+        st.dataframe(reason_counts_by_mode)
 
-        fig2, ax2 = plt.subplots(figsize=(10, 7))
-        sns.barplot(x='Count', y='Reason', data=reason_counts, palette='magma', ax=ax2)
-        ax2.set_title('Reasons for Unmatched Adjustments')
+        fig2, ax2 = plt.subplots(figsize=(12, 8))
+        sns.barplot(x='Count', y='Reason', hue='Mode', data=reason_counts_by_mode, palette='magma', ax=ax2)
+        ax2.set_title('Reasons for Unmatched Adjustments by FX Mode')
         ax2.set_xlabel('Number of Adjustments')
         ax2.set_ylabel('Reason')
         ax2.grid(axis='x', linestyle='--', alpha=0.7)
+        plt.tight_layout()
         st.pyplot(fig2)
 
-        st.write("**Distribution of Unmatched Adjustment Amounts:**")
+        st.write("**Distribution of Unmatched Adjustment Amounts (Combined):**")
         fig3, ax3 = plt.subplots(figsize=(10, 6))
-        sns.histplot(st.session_state.df_unmatched_adjustments['Amount'], bins=20, kde=True, color='red', ax=ax3)
-        ax3.set_title('Distribution of Unmatched Adjustment Amounts')
+        sns.histplot(combined_unmatched_adjustments, x='Amount', hue='Mode', bins=20, kde=True, palette='coolwarm', ax=ax3)
+        ax3.set_title('Distribution of Unmatched Adjustment Amounts (Combined FX)')
         ax3.set_xlabel('Amount')
         ax3.set_ylabel('Frequency')
         ax3.grid(axis='y', linestyle='--', alpha=0.7)
         st.pyplot(fig3)
     else:
-        st.info("No unmatched adjustments to analyze.")
+        st.info("No unmatched adjustments to analyze for both local and foreign FX.")
 
-    # 7.3 Unmatched Bank Records Analysis
+    # 7.3 Unmatched Bank Records Analysis (Global)
     if not st.session_state.df_unmatched_bank_records.empty:
-        st.markdown("### 7.3 Unmatched Bank Records Analysis")
+        st.markdown("### 7.3 Unmatched Bank Records Analysis (Global)")
         st.write("**Unmatched Bank Records by Bank/Table:**")
         bank_table_counts = st.session_state.df_unmatched_bank_records['Bank_Table'].value_counts().reset_index()
         bank_table_counts.columns = ['Bank_Table', 'Count']
@@ -702,6 +765,7 @@ def perform_data_analysis_and_visualizations():
         ax4.set_xlabel('Number of Records')
         ax4.set_ylabel('Bank Statement')
         ax4.grid(axis='x', linestyle='--', alpha=0.7)
+        plt.tight_layout()
         st.pyplot(fig4)
 
         st.write("**Distribution of Unmatched Bank Record Amounts:**")
@@ -714,10 +778,11 @@ def perform_data_analysis_and_visualizations():
         st.pyplot(fig5)
 
         # Time series analysis for unmatched bank records (if dates are present)
-        st.session_state.df_unmatched_bank_records['_ParsedDate'] = pd.to_datetime(st.session_state.df_unmatched_bank_records['Date'])
-        if not st.session_state.df_unmatched_bank_records['_ParsedDate'].empty:
+        df_unmatched_bank_temp = st.session_state.df_unmatched_bank_records.copy()
+        df_unmatched_bank_temp['_ParsedDate'] = pd.to_datetime(df_unmatched_bank_temp['Date'])
+        if not df_unmatched_bank_temp['_ParsedDate'].empty:
             st.write("**Unmatched Bank Records Over Time:**")
-            daily_unmatched = st.session_state.df_unmatched_bank_records.set_index('_ParsedDate').resample('D')['Amount'].count()
+            daily_unmatched = df_unmatched_bank_temp.set_index('_ParsedDate').resample('D')['Amount'].count()
             if not daily_unmatched.empty:
                 fig6, ax6 = plt.subplots(figsize=(12, 6))
                 daily_unmatched.plot(kind='line', marker='o', linestyle='-', color='purple', ax=ax6)
@@ -857,34 +922,57 @@ def fx_reconciliation_app():
         """, unsafe_allow_html=True)
 
 
-    # Initialize session state variables
-    if 'fx_trade_df' not in st.session_state:
-        st.session_state.fx_trade_df = pd.DataFrame()
+    # Initialize session state variables for both local and foreign FX data
+    if 'fx_trade_df_local' not in st.session_state:
+        st.session_state.fx_trade_df_local = pd.DataFrame()
+    if 'fx_trade_df_foreign' not in st.session_state:
+        st.session_state.fx_trade_df_foreign = pd.DataFrame()
+    
     if 'bank_dfs' not in st.session_state:
         st.session_state.bank_dfs = {}
-    if 'matched_adjustments_list' not in st.session_state:
-        st.session_state.matched_adjustments_list = []
-    if 'unmatched_adjustments_list' not in st.session_state:
-        st.session_state.unmatched_adjustments_list = []
-    if 'unmatched_bank_records_list' not in st.session_state:
-        st.session_state.unmatched_bank_records_list = []
-    if 'matched_bank_keys' not in st.session_state:
-        st.session_state.matched_bank_keys = set()
-    if 'df_matched_adjustments' not in st.session_state:
-        st.session_state.df_matched_adjustments = pd.DataFrame()
-    if 'df_unmatched_adjustments' not in st.session_state:
-        st.session_state.df_unmatched_adjustments = pd.DataFrame()
-    if 'df_unmatched_bank_records' not in st.session_state:
+    
+    # Separate states for reconciliation results for local and foreign
+    if 'matched_adjustments_list_local' not in st.session_state:
+        st.session_state.matched_adjustments_list_local = []
+    if 'unmatched_adjustments_list_local' not in st.session_state:
+        st.session_state.unmatched_adjustments_list_local = []
+    if 'matched_bank_keys_local' not in st.session_state: # Bank keys matched by local
+        st.session_state.matched_bank_keys_local = set()
+
+    if 'matched_adjustments_list_foreign' not in st.session_state:
+        st.session_state.matched_adjustments_list_foreign = []
+    if 'unmatched_adjustments_list_foreign' not in st.session_state:
+        st.session_state.unmatched_adjustments_list_foreign = []
+    if 'matched_bank_keys_foreign' not in st.session_state: # Bank keys matched by foreign
+        st.session_state.matched_bank_keys_foreign = set()
+
+    # Global lists for overall unmatched bank records and combined matched bank keys
+    if 'unmatched_bank_records_list_global' not in st.session_state:
+        st.session_state.unmatched_bank_records_list_global = []
+    if 'matched_bank_keys_global' not in st.session_state:
+        st.session_state.matched_bank_keys_global = set()
+
+    if 'df_matched_adjustments_local' not in st.session_state:
+        st.session_state.df_matched_adjustments_local = pd.DataFrame()
+    if 'df_unmatched_adjustments_local' not in st.session_state:
+        st.session_state.df_unmatched_adjustments_local = pd.DataFrame()
+    if 'df_matched_adjustments_foreign' not in st.session_state:
+        st.session_state.df_matched_adjustments_foreign = pd.DataFrame()
+    if 'df_unmatched_adjustments_foreign' not in st.session_state:
+        st.session_state.df_unmatched_adjustments_foreign = pd.DataFrame()
+    if 'df_unmatched_bank_records' not in st.session_state: # This is the global one
         st.session_state.df_unmatched_bank_records = pd.DataFrame()
-    if 'reconciliation_mode' not in st.session_state:
-        st.session_state.reconciliation_mode = 'local' # Default mode
-    if 'fx_uploaded_file_obj' not in st.session_state:
-        st.session_state.fx_uploaded_file_obj = None
+    
+    if 'fx_uploaded_file_obj_local' not in st.session_state:
+        st.session_state.fx_uploaded_file_obj_local = None
+    if 'fx_uploaded_file_obj_foreign' not in st.session_state:
+        st.session_state.fx_uploaded_file_obj_foreign = None
+
     if 'bank_uploaded_file_objs' not in st.session_state:
         st.session_state.bank_uploaded_file_objs = []
-    if 'raw_bank_data_previews' not in st.session_state: # New state for raw bank data and mappings
+    if 'raw_bank_data_previews' not in st.session_state:
         st.session_state.raw_bank_data_previews = {}
-    if 'debug_mode' not in st.session_state: # New state for debug mode
+    if 'debug_mode' not in st.session_state:
         st.session_state.debug_mode = False
 
 
@@ -892,86 +980,153 @@ def fx_reconciliation_app():
     with st.sidebar:
         st.header("Upload Data")
 
-        st.markdown("### 📥 FX Tracker Upload")
-        fx_uploaded_file = st.file_uploader("Upload FX Tracker (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader")
+        # --- Local FX Tracker Upload ---
+        st.markdown("### 📥 Local FX Tracker Upload")
+        fx_uploaded_file_local = st.file_uploader("Upload Local FX Tracker (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_local")
 
-        if fx_uploaded_file:
-            # Check if a new file is uploaded or if the file object has changed
-            if st.session_state.fx_uploaded_file_obj != fx_uploaded_file:
-                st.session_state.fx_uploaded_file_obj = fx_uploaded_file # Store the new file object
-                # Clear previous FX data when a new file is uploaded
-                st.session_state.fx_trade_df = pd.DataFrame()
-                st.session_state.fx_sheet_names = [] # Initialize for new file
-                st.session_state.fx_selected_sheet = None # Initialize for new file
-
-                # Process the newly uploaded file to get sheet names or initial df
-                if fx_uploaded_file.name.endswith('.xlsx'):
-                    st.session_state.fx_sheet_names = get_excel_sheet_names(fx_uploaded_file)
-                    if st.session_state.fx_sheet_names:
-                        st.session_state.fx_selected_sheet = st.session_state.fx_sheet_names[0]
+        if fx_uploaded_file_local:
+            if st.session_state.fx_uploaded_file_obj_local != fx_uploaded_file_local:
+                st.session_state.fx_uploaded_file_obj_local = fx_uploaded_file_local
+                st.session_state.fx_trade_df_local = pd.DataFrame()
+                st.session_state.fx_sheet_names_local = []
+                st.session_state.fx_selected_sheet_local = None
+                if fx_uploaded_file_local.name.endswith('.xlsx'):
+                    st.session_state.fx_sheet_names_local = get_excel_sheet_names(fx_uploaded_file_local)
+                    if st.session_state.fx_sheet_names_local:
+                        st.session_state.fx_selected_sheet_local = st.session_state.fx_sheet_names_local[0]
                 else:
-                    # For CSV, directly load and store raw df
-                    df_fx_raw_temp = process_uploaded_file(fx_uploaded_file)
+                    df_fx_raw_temp = process_uploaded_file(fx_uploaded_file_local)
                     if not df_fx_raw_temp.empty:
-                        st.session_state.fx_raw_df = df_fx_raw_temp
+                        st.session_state.fx_raw_df_local = df_fx_raw_temp
                     else:
-                        st.session_state.fx_raw_df = pd.DataFrame()
+                        st.session_state.fx_raw_df_local = pd.DataFrame()
 
-            file_details_fx = {"FileName": fx_uploaded_file.name, "FileType": fx_uploaded_file.type, "FileSize": fx_uploaded_file.size}
-            st.write(file_details_fx)
+            file_details_fx_local = {"FileName": fx_uploaded_file_local.name, "FileType": fx_uploaded_file_local.type, "FileSize": fx_uploaded_file_local.size}
+            st.write(file_details_fx_local)
 
-            df_fx_raw = pd.DataFrame()
-            if fx_uploaded_file.name.endswith('.xlsx'):
-                selected_sheet_fx = st.selectbox("Select FX Sheet:", st.session_state.fx_sheet_names, key="fx_sheet_selector",
-                                                index=st.session_state.fx_sheet_names.index(st.session_state.fx_selected_sheet) if st.session_state.fx_selected_sheet in st.session_state.fx_sheet_names else 0)
-                if selected_sheet_fx != st.session_state.fx_selected_sheet: # Update selected sheet in state
-                    st.session_state.fx_selected_sheet = selected_sheet_fx
-                
-                if selected_sheet_fx:
-                    df_fx_raw = process_uploaded_file(fx_uploaded_file, sheet_name=selected_sheet_fx)
-                    st.session_state.fx_raw_df = df_fx_raw # Store for mapping
+            df_fx_raw_local = pd.DataFrame()
+            if fx_uploaded_file_local.name.endswith('.xlsx'):
+                selected_sheet_fx_local = st.selectbox("Select Local FX Sheet:", st.session_state.fx_sheet_names_local, key="fx_sheet_selector_local",
+                                                        index=st.session_state.fx_sheet_names_local.index(st.session_state.fx_selected_sheet_local) if st.session_state.fx_selected_sheet_local in st.session_state.fx_sheet_names_local else 0)
+                if selected_sheet_fx_local != st.session_state.fx_selected_sheet_local:
+                    st.session_state.fx_selected_sheet_local = selected_sheet_fx_local
+                if selected_sheet_fx_local:
+                    df_fx_raw_local = process_uploaded_file(fx_uploaded_file_local, sheet_name=selected_sheet_fx_local)
+                    st.session_state.fx_raw_df_local = df_fx_raw_local
             else:
-                df_fx_raw = st.session_state.fx_raw_df # Use the already loaded raw df for CSV
+                df_fx_raw_local = st.session_state.fx_raw_df_local
 
-            if not df_fx_raw.empty:
-                st.write("FX Data Preview:")
-                st.dataframe(df_fx_raw.head())
+            if not df_fx_raw_local.empty:
+                st.write("Local FX Data Preview:")
+                st.dataframe(df_fx_raw_local.head())
 
-                st.markdown("#### Map FX Columns")
-                fx_column_mappings = {}
-                available_columns = df_fx_raw.columns.tolist()
-                available_columns.insert(0, "") 
+                st.markdown("#### Map Local FX Columns")
+                fx_column_mappings_local = {}
+                available_columns_local = df_fx_raw_local.columns.tolist()
+                available_columns_local.insert(0, "") 
 
                 for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
-                    # Try to pre-select if a column with a similar name exists
-                    initial_selection = default_val if default_val.strip() in [col.strip() for col in df_fx_raw.columns] else ""
+                    initial_selection = default_val if default_val.strip() in [col.strip() for col in df_fx_raw_local.columns] else ""
                     mapped_col = st.selectbox(
                         f"Map '{expected_col}' to:",
-                        options=available_columns,
-                        index = [col.strip() for col in available_columns].index(initial_selection.strip()) if initial_selection else 0,
-                        key=f"fx_map_{expected_col}"
+                        options=available_columns_local,
+                        index = [col.strip() for col in available_columns_local].index(initial_selection.strip()) if initial_selection else 0,
+                        key=f"fx_map_local_{expected_col}"
                     )
-                    fx_column_mappings[expected_col] = mapped_col if mapped_col else None
+                    fx_column_mappings_local[expected_col] = mapped_col if mapped_col else None
 
-                if st.button("Process FX Data", key="process_fx_btn"):
-                    temp_df_fx = df_fx_raw.copy()
+                if st.button("Process Local FX Data", key="process_fx_local_btn"):
+                    temp_df_fx = df_fx_raw_local.copy()
                     renamed_cols_dict = {}
-                    for expected_col, mapped_col in fx_column_mappings.items():
+                    for expected_col, mapped_col in fx_column_mappings_local.items():
                         if mapped_col and mapped_col in temp_df_fx.columns:
                             renamed_cols_dict[mapped_col] = expected_col
                     
                     temp_df_fx.rename(columns=renamed_cols_dict, inplace=True)
                     temp_df_fx.columns = temp_df_fx.columns.str.strip()
-                    st.session_state.fx_trade_df = temp_df_fx
-                    st.success("FX Data Processed!")
-                    st.dataframe(st.session_state.fx_trade_df.head())
+                    st.session_state.fx_trade_df_local = temp_df_fx
+                    st.success("Local FX Data Processed!")
+                    st.dataframe(st.session_state.fx_trade_df_local.head())
             else:
-                st.error("Could not load FX data.")
+                st.error("Could not load Local FX data.")
         else:
-            st.session_state.fx_trade_df = pd.DataFrame()
-            st.session_state.fx_uploaded_file_obj = None
-            st.session_state.fx_raw_df = pd.DataFrame() # Clear raw df as well
+            st.session_state.fx_trade_df_local = pd.DataFrame()
+            st.session_state.fx_uploaded_file_obj_local = None
+            st.session_state.fx_raw_df_local = pd.DataFrame()
 
+        # --- Foreign FX Tracker Upload ---
+        st.markdown("### 📥 Foreign FX Tracker Upload")
+        fx_uploaded_file_foreign = st.file_uploader("Upload Foreign FX Tracker (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_foreign")
+
+        if fx_uploaded_file_foreign:
+            if st.session_state.fx_uploaded_file_obj_foreign != fx_uploaded_file_foreign:
+                st.session_state.fx_uploaded_file_obj_foreign = fx_uploaded_file_foreign
+                st.session_state.fx_trade_df_foreign = pd.DataFrame()
+                st.session_state.fx_sheet_names_foreign = []
+                st.session_state.fx_selected_sheet_foreign = None
+                if fx_uploaded_file_foreign.name.endswith('.xlsx'):
+                    st.session_state.fx_sheet_names_foreign = get_excel_sheet_names(fx_uploaded_file_foreign)
+                    if st.session_state.fx_sheet_names_foreign:
+                        st.session_state.fx_selected_sheet_foreign = st.session_state.fx_sheet_names_foreign[0]
+                else:
+                    df_fx_raw_temp = process_uploaded_file(fx_uploaded_file_foreign)
+                    if not df_fx_raw_temp.empty:
+                        st.session_state.fx_raw_df_foreign = df_fx_raw_temp
+                    else:
+                        st.session_state.fx_raw_df_foreign = pd.DataFrame()
+
+            file_details_fx_foreign = {"FileName": fx_uploaded_file_foreign.name, "FileType": fx_uploaded_file_foreign.type, "FileSize": fx_uploaded_file_foreign.size}
+            st.write(file_details_fx_foreign)
+
+            df_fx_raw_foreign = pd.DataFrame()
+            if fx_uploaded_file_foreign.name.endswith('.xlsx'):
+                selected_sheet_fx_foreign = st.selectbox("Select Foreign FX Sheet:", st.session_state.fx_sheet_names_foreign, key="fx_sheet_selector_foreign",
+                                                        index=st.session_state.fx_sheet_names_foreign.index(st.session_state.fx_selected_sheet_foreign) if st.session_state.fx_selected_sheet_foreign in st.session_state.fx_sheet_names_foreign else 0)
+                if selected_sheet_fx_foreign != st.session_state.fx_selected_sheet_foreign:
+                    st.session_state.fx_selected_sheet_foreign = selected_sheet_fx_foreign
+                if selected_sheet_fx_foreign:
+                    df_fx_raw_foreign = process_uploaded_file(fx_uploaded_file_foreign, sheet_name=selected_sheet_fx_foreign)
+                    st.session_state.fx_raw_df_foreign = df_fx_raw_foreign
+            else:
+                df_fx_raw_foreign = st.session_state.fx_raw_df_foreign
+
+            if not df_fx_raw_foreign.empty:
+                st.write("Foreign FX Data Preview:")
+                st.dataframe(df_fx_raw_foreign.head())
+
+                st.markdown("#### Map Foreign FX Columns")
+                fx_column_mappings_foreign = {}
+                available_columns_foreign = df_fx_raw_foreign.columns.tolist()
+                available_columns_foreign.insert(0, "") 
+
+                for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
+                    initial_selection = default_val if default_val.strip() in [col.strip() for col in df_fx_raw_foreign.columns] else ""
+                    mapped_col = st.selectbox(
+                        f"Map '{expected_col}' to:",
+                        options=available_columns_foreign,
+                        index = [col.strip() for col in available_columns_foreign].index(initial_selection.strip()) if initial_selection else 0,
+                        key=f"fx_map_foreign_{expected_col}"
+                    )
+                    fx_column_mappings_foreign[expected_col] = mapped_col if mapped_col else None
+
+                if st.button("Process Foreign FX Data", key="process_fx_foreign_btn"):
+                    temp_df_fx = df_fx_raw_foreign.copy()
+                    renamed_cols_dict = {}
+                    for expected_col, mapped_col in fx_column_mappings_foreign.items():
+                        if mapped_col and mapped_col in temp_df_fx.columns:
+                            renamed_cols_dict[mapped_col] = expected_col
+                    
+                    temp_df_fx.rename(columns=renamed_cols_dict, inplace=True)
+                    temp_df_fx.columns = temp_df_fx.columns.str.strip()
+                    st.session_state.fx_trade_df_foreign = temp_df_fx
+                    st.success("Foreign FX Data Processed!")
+                    st.dataframe(st.session_state.fx_trade_df_foreign.head())
+            else:
+                st.error("Could not load Foreign FX data.")
+        else:
+            st.session_state.fx_trade_df_foreign = pd.DataFrame()
+            st.session_state.fx_uploaded_file_obj_foreign = None
+            st.session_state.fx_raw_df_foreign = pd.DataFrame()
 
         st.markdown("### 🏦 Bank Statements Upload")
         bank_uploaded_files = st.file_uploader("Upload Bank Statement(s) (CSV/Excel)", type=["csv", "xlsx"], accept_multiple_files=True, key="bank_uploader")
@@ -981,18 +1136,15 @@ def fx_reconciliation_app():
             st.session_state.bank_uploaded_file_objs = bank_uploaded_files
             st.session_state.raw_bank_data_previews = {} # Reset for new uploads
             for i, file in enumerate(bank_uploaded_files):
-                # Use a more descriptive key for each file, not just the lowercased name
-                # This will be replaced by the user-selected name, but needed for initial state.
                 initial_file_key = f"file_{i}_{file.name.lower().replace('.', '_')}" 
                 st.session_state.raw_bank_data_previews[initial_file_key] = {
                     'file_obj': file,
                     'df_raw': pd.DataFrame(),
                     'sheet_names': [],
                     'selected_sheet': None,
-                    'column_mappings': {}, # Store mappings per file
-                    'standardized_name': "" # NEW: To store the user's selected standardized name
+                    'column_mappings': {},
+                    'standardized_name': ""
                 }
-                # Immediately process file to get sheet names or initial df
                 if file.name.endswith('.xlsx'):
                     st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names'] = get_excel_sheet_names(file)
                     if st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names']:
@@ -1001,26 +1153,20 @@ def fx_reconciliation_app():
                 else:
                     st.session_state.raw_bank_data_previews[initial_file_key]['df_raw'] = process_uploaded_file(file)
 
-        # Display mapping UI for each uploaded bank file
         if st.session_state.raw_bank_data_previews:
-            # We need to preserve the order of uploaded files for consistent UI.
-            # Convert raw_bank_data_previews to a list of (key, data) tuples
-            # to iterate and re-assign after updates.
             current_bank_data_previews = list(st.session_state.raw_bank_data_previews.items())
 
             for i, (file_key, data) in enumerate(current_bank_data_previews):
-                # Use a unique expander for each file to maintain state
                 with st.expander(f"Configure {data['file_obj'].name}", expanded=True):
                     st.markdown(f"#### Configuration for {data['file_obj'].name}")
                     
-                    # NEW: Dropdown for standardized bank name
                     selected_standardized_name = st.selectbox(
                         f"Select Standardized Name for {data['file_obj'].name}:",
                         options=[""] + PREDEFINED_BANK_CURRENCY_OPTIONS,
                         index=PREDEFINED_BANK_CURRENCY_OPTIONS.index(data['standardized_name']) + 1 if data['standardized_name'] in PREDEFINED_BANK_CURRENCY_OPTIONS else 0,
                         key=f"standardized_name_selector_{file_key}"
                     )
-                    data['standardized_name'] = selected_standardized_name # Update in data dictionary
+                    data['standardized_name'] = selected_standardized_name
 
                     df_bank_raw = data['df_raw']
                     
@@ -1031,7 +1177,7 @@ def fx_reconciliation_app():
                         if current_sheet != data['selected_sheet']:
                             data['selected_sheet'] = current_sheet
                             data['df_raw'] = process_uploaded_file(data['file_obj'], sheet_name=current_sheet)
-                            df_bank_raw = data['df_raw'] # Update df_bank_raw for current iteration
+                            df_bank_raw = data['df_raw']
 
                     if not df_bank_raw.empty:
                         st.write(f"Preview of {data['file_obj'].name}:")
@@ -1040,7 +1186,7 @@ def fx_reconciliation_app():
                         available_columns = df_bank_raw.columns.tolist()
                         available_columns.insert(0, "") 
 
-                        current_file_mappings = data['column_mappings'] # Use the stored mappings for this file
+                        current_file_mappings = data['column_mappings']
 
                         for expected_col, default_val in BANK_EXPECTED_COLUMNS.items():
                             initial_selection = current_file_mappings.get(expected_col) or next((col for col in df_bank_raw.columns if col.strip() in default_val), None)
@@ -1051,14 +1197,12 @@ def fx_reconciliation_app():
                                 key=f"bank_map_{file_key}_{expected_col}"
                             )
                             current_file_mappings[expected_col] = mapped_col if mapped_col else None
-                        data['column_mappings'] = current_file_mappings # Update mappings in state
+                        data['column_mappings'] = current_file_mappings
                     else:
                         st.error(f"Could not load bank data from {data['file_obj'].name}.")
             
-            # Update the session state with the potentially modified current_bank_data_previews
             st.session_state.raw_bank_data_previews = {k: v for k, v in current_bank_data_previews}
 
-            # Button to process all bank statements after mapping
             if st.button("Process All Bank Statements", key="process_all_bank_btn"):
                 st.session_state.bank_dfs = {}
                 for file_key, data in st.session_state.raw_bank_data_previews.items():
@@ -1074,7 +1218,6 @@ def fx_reconciliation_app():
                     
                     df_to_process.rename(columns=renamed_cols_dict, inplace=True)
                     df_to_process.columns = df_to_process.columns.str.strip()
-                    # Use the standardized name as the key for the bank_dfs dictionary
                     st.session_state.bank_dfs[data['standardized_name']] = df_to_process
                     st.success(f"Processed and applied mappings for {data['file_obj'].name} as '{data['standardized_name']}'!")
                 st.write("All Bank Statements Processed!")
@@ -1087,17 +1230,11 @@ def fx_reconciliation_app():
     # Main content area
     st.header("Reconciliation")
 
-    st.session_state.reconciliation_mode = st.selectbox(
-        "Select Reconciliation Mode:",
-        options=['local', 'foreign'],
-        key="mode_selector"
-    )
-
     # Debug mode checkbox
     st.session_state.debug_mode = st.checkbox("Enable Reconciliation Debug Logging", value=st.session_state.debug_mode)
 
-    if st.button("Perform Reconciliation", key="reconcile_btn"):
-        perform_reconciliation()
+    if st.button("Perform Full Reconciliation (Local & Foreign FX)", key="reconcile_btn"):
+        perform_full_reconciliation()
 
     st.header("Analysis and Visualizations")
     if st.button("Generate Analysis and Visualizations", key="analyze_btn"):
