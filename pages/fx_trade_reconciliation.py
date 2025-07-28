@@ -22,21 +22,13 @@ out_csv_path_buy_matched = 'MatchedCounterpartyPayment.csv'
 out_csv_path_sell_matched = 'MatchedChoicePayment.csv'
 
 # Various Date Formats to handle different date representations in CSVs
-date_formats = [
-    '%Y-%m-%d',
-    '%Y/%m/%d',
-    '%d.%m.%Y',
-    '%Y.%m.%d',
-    '%d/%m/%Y',
-    '%-d/%-m/%Y',
-    '%-d.%-m.%Y',
-    '%Y-%m-%d %H:%M:%S', # For datetime strings
-    '%Y/%m/%d %H:%M:%S',
-    '%d.%m.%Y %H:%M:%S',
-    '%Y.%m.%d %H:%M:%S',
-    '%d/%m/%Y %H:%M:%S',
-    '%-d/%-m/%Y %H:%M:%S',
-    '%-d.%-m.%Y %H:%M:%S'
+DATE_FORMATS = [
+    '%Y-%m-%d', '%Y/%m/%d', '%d.%m.%Y', '%Y.%m.%d',
+    '%d/%m/%Y', '%-d/%-m/%Y', '%-d.%-m/%-Y', # Added -%d for non-padded day
+    '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', # Added datetime formats
+    '%d.%m.%Y %H:%M:%S', '%Y.%m.%d %H:%M:%S',
+    '%d/%m/%Y %H:%M:%S', '%-d/%-m/%Y %H:%M:%S',
+    '%-d.%-m.%Y %H:%M:%S', "%d.%m.%Y"
 ]
 
 # Fuzzy matching threshold for bank names (0-100) - Less relevant with direct selection, but kept for normalize_bank_key
@@ -228,7 +220,7 @@ def parse_date(date_str_raw):
         
     date_str = str(date_str_raw).strip() # Ensure it's a string
 
-    for fmt in date_formats:
+    for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(date_str, fmt)
         except ValueError:
