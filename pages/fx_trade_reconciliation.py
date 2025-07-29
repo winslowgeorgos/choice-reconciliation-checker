@@ -364,9 +364,9 @@ def process_fx_match(
 
     for idx, bank_row in date_matches.iterrows():
         # Only consider bank records that have not been matched yet
-        if bank_df.at[idx, "Matched"] == True:
-            st.warning(f"DEBUG: Skipping bank record {idx} in {target_bank_df_key} (AMOUNT {bank_row.get(amount_column)}) (Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Desc: {bank_row.get('Description Column', 'N/A')}) as it's already matched.")
-            continue
+        # if bank_df.at[idx, "Matched"] == True:
+        #     st.warning(f"DEBUG: Skipping bank record {idx} in {target_bank_df_key} (AMOUNT {bank_row.get(amount_column)}) (Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Desc: {bank_row.get('Description Column', 'N/A')}) as it's already matched.")
+        #     continue
 
         bank_amt_raw = bank_row.get(amount_column)
         bank_amt = safe_float(bank_amt_raw)
