@@ -89,7 +89,7 @@ def parse_date(date_str_raw):
         date_str_raw = str(date_str_raw)
 
     # Strip time part if present (e.g., "18.07.2025 12:34:56" => "18.07.2025")
-    date_str = date_str_raw.partition(" ")[0].strip()
+    date_str = date_str_raw.partition(" ")[0].strip() if " " in date_str_raw.strip() else date_str_raw.strip()
 
     for fmt in DATE_FORMATS:
         try:
@@ -151,7 +151,7 @@ def process_uploaded_file(uploaded_file, sheet_name=None):
     
     if uploaded_file.name.endswith('.csv'):
         # Try multiple encodings for CSV
-        encodings = ['utf-8', 'latin1', 'ISO-8859-1']
+        encodings = ['utf-8', 'utf-8-sig', 'latin1', 'ISO-8859-1', 'windows-1252']
         for enc in encodings:
             try:
                 df = pd.read_csv(uploaded_file, encoding=enc)
@@ -316,7 +316,7 @@ def reconcile_adjustment_row(
     if not target_bank_df_key:
         if debug:
             st.error(f"   ❌ No matching bank statement found for this adjustment based on selected bank statement name and currency.")
-        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)- {target_bank_df_key}'})
         return False
 
     bank_df = all_bank_dfs[target_bank_df_key]
@@ -380,32 +380,32 @@ def reconcile_adjustment_row(
             )
             
             # Ensure we don't double-count a bank record if it matches multiple adjustments
-            if bank_record_key not in matched_bank_keys:
-                matched_adjustments_list.append({
-                    'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
-                    'Adjustment_Amount': amount,
-                    'Adjustment_Operation': operation,
-                    'Adjustment_Intermediary_Account': intermediary_account,
-                    'Adjustment_Currency': currency,
-                    'Bank_Table': target_bank_df_key,
-                    'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
-                    'Bank_Statement_Amount': bank_amt,
-                    'Bank_Matched_Column': amount_column,
-                    'Bank_Row_Index': idx
-                })
-                matched_bank_keys.add(bank_record_key)
-                if debug:
-                    st.success("✅ Match found and recorded!")
-                match_found = True
-                break
-            else:
-                if debug:
-                    st.info(f"  Bank record {bank_record_key} already matched. Skipping duplicate.")
-                # We count this adjustment as unmatched if its corresponding bank record is already used
-                # or we might want to specifically track this as a "potential duplicate" if needed.
-                # For now, let's treat it as unmatched since its target bank entry is taken.
-                # unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Bank record already matched to another adjustment'})
-                continue # Continue searching for another match for this adjustment
+            # if bank_record_key not in matched_bank_keys:
+            matched_adjustments_list.append({
+                'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
+                'Adjustment_Amount': amount,
+                'Adjustment_Operation': operation,
+                'Adjustment_Intermediary_Account': intermediary_account,
+                'Adjustment_Currency': currency,
+                'Bank_Table': target_bank_df_key,
+                'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
+                'Bank_Statement_Amount': bank_amt,
+                'Bank_Matched_Column': amount_column,
+                'Bank_Row_Index': idx
+            })
+            matched_bank_keys.add(bank_record_key)
+            if debug:
+                st.success("✅ Match found and recorded!")
+            match_found = True
+            break
+            # else:
+            #     if debug:
+            #         st.info(f"  Bank record {bank_record_key} already matched. Skipping duplicate.")
+            #     # We count this adjustment as unmatched if its corresponding bank record is already used
+            #     # or we might want to specifically track this as a "potential duplicate" if needed.
+            #     # For now, let's treat it as unmatched since its target bank entry is taken.
+            #     # unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Bank record already matched to another adjustment'})
+            #     continue # Continue searching for another match for this adjustment
             
 
     if not match_found:
