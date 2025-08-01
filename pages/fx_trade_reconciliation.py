@@ -43,6 +43,7 @@ PREDEFINED_BANK_CURRENCY_COMBOS = sorted([ # Sorted for better UX in dropdown
     "kcb KES", "kcb USD", "kcb EUR", "kcb GBP",
     "sbm KES", "sbm USD", "sbm EUR", "sbm GBP",
     "absa KES", "absa USD", "absa EUR", "absa GBP",
+    "uba KES", "uba USD", "uba EUR", "uba GBP",
     "kingdom KES", "kingdom USD", "kingdom EUR", "kingdom GBP",
     # Add more as needed based on actual bank offerings
 ])
@@ -121,7 +122,10 @@ def normalize_bank_key(raw_key, debug_mode=False): # Added debug_mode parameter
         'sbm bank (kenya) limited': 'sbm',
         'sbm bank': 'sbm',
         'absa bank': 'absa',
-        'kingdom bank': 'kingdom'
+        'kingdom bank': 'kingdom',
+        "uba bank" : 'uba',
+        "uba" : 'uba',
+        'UBA Kenya Bank Ltd': 'uba'
     }
 
     # First, try direct replacement

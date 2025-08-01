@@ -36,25 +36,28 @@ BANK_NAME_MAP = {
     'fx temporary account': 'fx_temp',
     'other temporary account': 'other_temp',
     'unclaimed funds': 'unclaimed_funds',
-    'yeepay': 'yeepay'
+    'yeepay': 'yeepay',
+    'UBA Kenya Bank Ltd': 'uba',
+    'UBA Bank' : 'uba'
 }
 
 # NEW: Predefined list of bank and currency combinations for user selection
 # This list should be exhaustive for all possible bank statements you expect.
 PREDEFINED_BANK_CURRENCY_OPTIONS = [
     "Absa KES", "Absa USD", "Absa EUR", "Absa GBP",
-    "CBK KES", "CBK USD", "CBK EUR",
+    "CBK KES", "CBK USD", "CBK EUR", "CBK GBP",
     "Equity KES", "Equity USD", "Equity EUR", "Equity GBP",
-    "I&M KES", "I&M USD",
-    "KCB KES", "KCB USD",
-    "Kingdom KES", "Kingdom USD",
-    "NCBA KES", "NCBA USD", "NCBA EUR",
-    "SBM KES", "SBM USD",
-    "BAAS Temporary KES", "BAAS Temporary USD",
-    "FX Temporary KES", "FX Temporary USD",
-    "Other Temporary KES", "Other Temporary USD",
-    "Unclaimed Funds KES", "Unclaimed Funds USD",
-    "Yeepay KES", "Yeepay USD"
+    "I&M KES", "I&M USD", "I&M EUR", "I&M GBP",
+    "KCB KES", "KCB USD", "KCB EUR", "KCB GBP",
+    "Kingdom KES", "Kingdom USD", "Kingdom EUR", "Kingdom GBP",
+    "NCBA KES", "NCBA USD", "NCBA EUR", "NCBA GBP",
+    "SBM KES", "SBM USD", "SBM EUR", "SBM GBP",
+    "UBA KES", "UBA USD", "UBA EUR", "UBA GBP",
+    "BAAS Temporary KES", "BAAS Temporary USD", "BAAS Temporary EUR", "BAAS Temporary GBP",
+    "FX Temporary KES", "FX Temporary USD", "FX Temporary EUR", "FX Temporary GBP",
+    "Other Temporary KES", "Other Temporary USD", "Other Temporary EUR", "Other Temporary GBP",
+    "Unclaimed Funds KES", "Unclaimed Funds USD", "Unclaimed Funds EUR", "Unclaimed Funds GBP",
+    "Yeepay KES", "Yeepay USD", "Yeepay EUR", "Yeepay GBP"
     # Add more as needed
 ]
 
