@@ -5,6 +5,55 @@ import io
 import matplotlib.pyplot as plt
 import seaborn as sns
 import uuid
+import os
+import pickle
+
+# --- Constants ---
+UPLOAD_DIR = "data/uploads"
+CACHE_DIR = "data/cache"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# --- Helper Functions ---
+def save_uploaded_file(file, filename):
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    with open(file_path, "wb") as f:
+        f.write(file.getbuffer())
+    return file_path
+
+def save_dataframe(df, filename):
+    df.to_pickle(os.path.join(CACHE_DIR, filename))
+
+def load_dataframe(filename):
+    path = os.path.join(CACHE_DIR, filename)
+    return pd.read_pickle(path) if os.path.exists(path) else pd.DataFrame()
+
+def save_object(obj, filename):
+    with open(os.path.join(CACHE_DIR, filename), 'wb') as f:
+        pickle.dump(obj, f)
+
+def load_object(filename, default=None):
+    path = os.path.join(CACHE_DIR, filename)
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    return default
+
+# --- Constants for expected columns (example) ---
+FX_EXPECTED_COLUMNS = {
+    "Transaction ID": "trans_id",
+    "Amount": "amount",
+    "Date": "date",
+    "Currency": "currency"
+}
+
+# --- Restore session state ---
+st.session_state.fx_trade_df_local = load_dataframe("fx_trade_df_local.pkl")
+st.session_state.fx_trade_df_foreign = load_dataframe("fx_trade_df_foreign.pkl")
+st.session_state.fx_selected_sheet_local = load_object("fx_selected_sheet_local.pkl")
+st.session_state.fx_selected_sheet_foreign = load_object("fx_selected_sheet_foreign.pkl")
+st.session_state.fx_column_mappings_local = load_object("fx_column_mappings_local.pkl", {})
+st.session_state.fx_column_mappings_foreign = load_object("fx_column_mappings_foreign.pkl", {})
 
 # Set Seaborn style for beautiful plots
 sns.set_theme(style="whitegrid", palette="viridis")
@@ -63,7 +112,7 @@ PREDEFINED_BANK_CURRENCY_OPTIONS = [
 # Define expected columns for FX Tracker and Bank Statements
 FX_EXPECTED_COLUMNS = {
     'Amount': 'Amount',
-    'Operation': 'Operation',
+    'Operation': 'Operation ',
     'Completed At': 'Completed At',
     'Intermediary Account': 'Intermediary Account',
     'Currency': 'Currency',
@@ -602,74 +651,6 @@ def perform_full_reconciliation(bank_dfs: dict):
     st.write("---")
     st.write(f"📄 Total Unmatched Bank Records (Global): {len(st.session_state.df_unmatched_bank_records)}")
 
-    # Display results in expanders
-    st.markdown("### Reconciliation Results Summary")
-
-    with st.expander("Local FX Matched Adjustments"):
-        if not st.session_state.df_matched_adjustments_local.empty:
-            st.dataframe(st.session_state.df_matched_adjustments_local)
-            st.download_button(
-                label="Download Local Matched Adjustments",
-                data=st.session_state.df_matched_adjustments_local.to_csv(index=False).encode('utf-8'),
-                file_name="matched_adjustments_local.csv",
-                mime="text/csv",
-                key=f"download_matched_local_{uuid.uuid4()}"
-            )
-        else:
-            st.info("No local matched adjustments.")
-
-    with st.expander("Local FX Unmatched Adjustments"):
-        if not st.session_state.df_unmatched_adjustments_local.empty:
-            st.dataframe(st.session_state.df_unmatched_adjustments_local)
-            st.download_button(
-                label="Download Local Unmatched Adjustments",
-                data=st.session_state.df_unmatched_adjustments_local.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_adjustments_local.csv",
-                mime="text/csv",
-                key=f"download_unmatched_local_{uuid.uuid4()}"
-            )
-        else:
-            st.info("No local unmatched adjustments.")
-    
-    with st.expander("Foreign FX Matched Adjustments"):
-        if not st.session_state.df_matched_adjustments_foreign.empty:
-            st.dataframe(st.session_state.df_matched_adjustments_foreign)
-            st.download_button(
-                label="Download Foreign Matched Adjustments",
-                data=st.session_state.df_matched_adjustments_foreign.to_csv(index=False).encode('utf-8'),
-                file_name="matched_adjustments_foreign.csv",
-                mime="text/csv",
-                key=f"download_matched_foreign_{uuid.uuid4()}"
-            )
-        else:
-            st.info("No foreign matched adjustments.")
-
-    with st.expander("Foreign FX Unmatched Adjustments"):
-        if not st.session_state.df_unmatched_adjustments_foreign.empty:
-            st.dataframe(st.session_state.df_unmatched_adjustments_foreign)
-            st.download_button(
-                label="Download Foreign Unmatched Adjustments",
-                data=st.session_state.df_unmatched_adjustments_foreign.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_adjustments_foreign.csv",
-                mime="text/csv",
-                key=f"download_unmatched_foreign_{uuid.uuid4()}"
-            )
-        else:
-            st.info("No foreign unmatched adjustments.")
-
-    with st.expander("Unmatched Bank Records (Global)"):
-        if not st.session_state.df_unmatched_bank_records.empty:
-            st.dataframe(st.session_state.df_unmatched_bank_records)
-            st.download_button(
-                label="Download Unmatched Bank Records (Global)",
-                data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
-                file_name="unmatched_bank_records_global.csv",
-                mime="text/csv",
-                key=f"download_unmatched_bank_global_{uuid.uuid4()}"
-            )
-        else:
-            st.info("No unmatched bank records (global).")
-
 
 def perform_data_analysis_and_visualizations():
     """Performs data analysis and generates visualizations based on reconciliation results."""
@@ -984,156 +965,167 @@ def fx_reconciliation_app(bank_dfs: dict): # Added bank_dfs as an argument
 
 
     # Sidebar for controls and uploads
+
     with st.sidebar:
         st.header("Upload Data")
 
+                # --- Reset button ---
+        if st.button("Reset All Saved Data"):
+            for fname in [
+                "fx_trade_df_local.pkl", "fx_trade_df_foreign.pkl",
+                "fx_column_mappings_local.pkl", "fx_column_mappings_foreign.pkl",
+                "fx_selected_sheet_local.pkl", "fx_selected_sheet_foreign.pkl"
+            ]:
+                try: 
+                    os.remove(os.path.join(CACHE_DIR, fname))
+                except Exception as e:
+                    st.warning(f"Could not remove {fname}: {e}")
+            
+            for fname in os.listdir(UPLOAD_DIR):
+                try: 
+                    os.remove(os.path.join(UPLOAD_DIR, fname))
+                except Exception as e:
+                    st.warning(f"Could not remove {fname}: {e}")
+            
+            st.session_state.clear()
+            st.rerun()  # Use st.rerun() instead of st.experimental_rerun()
+
         # --- Local FX Tracker Upload ---
-        st.markdown("### 📥 Local FX Tracker Upload")
-        fx_uploaded_file_local = st.file_uploader("Upload Local FX Tracker (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_local")
+        st.markdown("### 📅 Local Currency Account Ajacements Upload")
+        fx_uploaded_file_local = st.file_uploader("Upload Local adjacements (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_local")
 
         if fx_uploaded_file_local:
-            if st.session_state.fx_uploaded_file_obj_local != fx_uploaded_file_local:
+            if st.session_state.get("fx_uploaded_file_obj_local") != fx_uploaded_file_local:
                 st.session_state.fx_uploaded_file_obj_local = fx_uploaded_file_local
-                st.session_state.fx_trade_df_local = pd.DataFrame()
+                save_uploaded_file(fx_uploaded_file_local, "local_fx_uploaded." + fx_uploaded_file_local.name.split('.')[-1])
                 st.session_state.fx_sheet_names_local = []
                 st.session_state.fx_selected_sheet_local = None
-                if fx_uploaded_file_local.name.endswith('.xlsx'):
-                    st.session_state.fx_sheet_names_local = get_excel_sheet_names(fx_uploaded_file_local)
+                if fx_uploaded_file_local.name.endswith(".xlsx"):
+                    st.session_state.fx_sheet_names_local = pd.ExcelFile(fx_uploaded_file_local).sheet_names
                     if st.session_state.fx_sheet_names_local:
                         st.session_state.fx_selected_sheet_local = st.session_state.fx_sheet_names_local[0]
                 else:
-                    df_fx_raw_temp = process_uploaded_file(fx_uploaded_file_local)
-                    if not df_fx_raw_temp.empty:
-                        st.session_state.fx_raw_df_local = df_fx_raw_temp
-                    else:
-                        st.session_state.fx_raw_df_local = pd.DataFrame()
+                    df_fx_raw_temp = pd.read_csv(fx_uploaded_file_local)
+                    st.session_state.fx_raw_df_local = df_fx_raw_temp if not df_fx_raw_temp.empty else pd.DataFrame()
 
             file_details_fx_local = {"FileName": fx_uploaded_file_local.name, "FileType": fx_uploaded_file_local.type, "FileSize": fx_uploaded_file_local.size}
             st.write(file_details_fx_local)
 
             df_fx_raw_local = pd.DataFrame()
-            if fx_uploaded_file_local.name.endswith('.xlsx'):
+            if fx_uploaded_file_local.name.endswith(".xlsx"):
                 selected_sheet_fx_local = st.selectbox("Select Local FX Sheet:", st.session_state.fx_sheet_names_local, key="fx_sheet_selector_local",
-                                                        index=st.session_state.fx_sheet_names_local.index(st.session_state.fx_selected_sheet_local) if st.session_state.fx_selected_sheet_local in st.session_state.fx_sheet_names_local else 0)
+                    index=st.session_state.fx_sheet_names_local.index(st.session_state.fx_selected_sheet_local) if st.session_state.fx_selected_sheet_local in st.session_state.fx_sheet_names_local else 0)
                 if selected_sheet_fx_local != st.session_state.fx_selected_sheet_local:
                     st.session_state.fx_selected_sheet_local = selected_sheet_fx_local
-                if selected_sheet_fx_local:
-                    df_fx_raw_local = process_uploaded_file(fx_uploaded_file_local, sheet_name=selected_sheet_fx_local)
-                    st.session_state.fx_raw_df_local = df_fx_raw_local
+                    save_object(selected_sheet_fx_local, "fx_selected_sheet_local.pkl")
+                df_fx_raw_local = pd.read_excel(fx_uploaded_file_local, sheet_name=selected_sheet_fx_local)
+                st.session_state.fx_raw_df_local = df_fx_raw_local
             else:
                 df_fx_raw_local = st.session_state.fx_raw_df_local
 
             if not df_fx_raw_local.empty:
-                st.write("Local FX Data Preview:")
+                st.write("Local Adjacements Data Preview:")
                 st.dataframe(df_fx_raw_local.head())
 
-                st.markdown("#### Map Local FX Columns")
+                st.markdown("#### Map Local Adjacements Columns")
                 fx_column_mappings_local = {}
-                available_columns_local = df_fx_raw_local.columns.tolist()
-                available_columns_local.insert(0, "") 
+                available_columns_local = [""] + df_fx_raw_local.columns.tolist()
 
                 for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
-                    initial_selection = default_val if default_val.strip() in [col.strip() for col in df_fx_raw_local.columns] else ""
+                    initial_selection = (
+                        st.session_state.fx_column_mappings_local.get(expected_col)
+                        if expected_col in st.session_state.fx_column_mappings_local
+                        else default_val if default_val.strip() in [col.strip() for col in df_fx_raw_local.columns]
+                        else ""
+                    )
                     mapped_col = st.selectbox(
                         f"Map '{expected_col}' to:",
                         options=available_columns_local,
-                        index = [col.strip() for col in available_columns_local].index(initial_selection.strip()) if initial_selection else 0,
+                        index=available_columns_local.index(initial_selection) if initial_selection in available_columns_local else 0,
                         key=f"fx_map_local_{expected_col}"
                     )
                     fx_column_mappings_local[expected_col] = mapped_col if mapped_col else None
 
-                if st.button("Process Local FX Data", key="process_fx_local_btn"):
+                if st.button("Process Local Adjacements Data", key="process_fx_local_btn"):
                     temp_df_fx = df_fx_raw_local.copy()
-                    renamed_cols_dict = {}
-                    for expected_col, mapped_col in fx_column_mappings_local.items():
-                        if mapped_col and mapped_col in temp_df_fx.columns:
-                            renamed_cols_dict[mapped_col] = expected_col
-                    
+                    renamed_cols_dict = {mapped: expected for expected, mapped in fx_column_mappings_local.items() if mapped in temp_df_fx.columns}
                     temp_df_fx.rename(columns=renamed_cols_dict, inplace=True)
                     temp_df_fx.columns = temp_df_fx.columns.str.strip()
                     st.session_state.fx_trade_df_local = temp_df_fx
-                    st.success("Local FX Data Processed!")
-                    st.dataframe(st.session_state.fx_trade_df_local.head())
-            else:
-                st.error("Could not load Local FX data.")
-        else:
-            st.session_state.fx_trade_df_local = pd.DataFrame()
-            st.session_state.fx_uploaded_file_obj_local = None
-            st.session_state.fx_raw_df_local = pd.DataFrame()
+                    save_dataframe(temp_df_fx, "fx_trade_df_local.pkl")
+                    st.session_state.fx_column_mappings_local = fx_column_mappings_local
+                    save_object(fx_column_mappings_local, "fx_column_mappings_local.pkl")
+                    st.success("Local Adjacements Data Processed!")
+                    st.dataframe(temp_df_fx.head())
 
         # --- Foreign FX Tracker Upload ---
-        st.markdown("### 📥 Foreign FX Tracker Upload")
-        fx_uploaded_file_foreign = st.file_uploader("Upload Foreign FX Tracker (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_foreign")
+        st.markdown("### 🌐 Foreign Currency Account Adjacements Upload")
+        fx_uploaded_file_foreign = st.file_uploader("Upload Foreign Adjacements (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_foreign")
 
         if fx_uploaded_file_foreign:
-            if st.session_state.fx_uploaded_file_obj_foreign != fx_uploaded_file_foreign:
+            if st.session_state.get("fx_uploaded_file_obj_foreign") != fx_uploaded_file_foreign:
                 st.session_state.fx_uploaded_file_obj_foreign = fx_uploaded_file_foreign
-                st.session_state.fx_trade_df_foreign = pd.DataFrame()
+                save_uploaded_file(fx_uploaded_file_foreign, "foreign_fx_uploaded." + fx_uploaded_file_foreign.name.split('.')[-1])
                 st.session_state.fx_sheet_names_foreign = []
                 st.session_state.fx_selected_sheet_foreign = None
-                if fx_uploaded_file_foreign.name.endswith('.xlsx'):
-                    st.session_state.fx_sheet_names_foreign = get_excel_sheet_names(fx_uploaded_file_foreign)
+                if fx_uploaded_file_foreign.name.endswith(".xlsx"):
+                    st.session_state.fx_sheet_names_foreign = pd.ExcelFile(fx_uploaded_file_foreign).sheet_names
                     if st.session_state.fx_sheet_names_foreign:
                         st.session_state.fx_selected_sheet_foreign = st.session_state.fx_sheet_names_foreign[0]
                 else:
-                    df_fx_raw_temp = process_uploaded_file(fx_uploaded_file_foreign)
-                    if not df_fx_raw_temp.empty:
-                        st.session_state.fx_raw_df_foreign = df_fx_raw_temp
-                    else:
-                        st.session_state.fx_raw_df_foreign = pd.DataFrame()
+                    df_fx_raw_temp = pd.read_csv(fx_uploaded_file_foreign)
+                    st.session_state.fx_raw_df_foreign = df_fx_raw_temp if not df_fx_raw_temp.empty else pd.DataFrame()
 
             file_details_fx_foreign = {"FileName": fx_uploaded_file_foreign.name, "FileType": fx_uploaded_file_foreign.type, "FileSize": fx_uploaded_file_foreign.size}
             st.write(file_details_fx_foreign)
 
             df_fx_raw_foreign = pd.DataFrame()
-            if fx_uploaded_file_foreign.name.endswith('.xlsx'):
-                selected_sheet_fx_foreign = st.selectbox("Select Foreign FX Sheet:", st.session_state.fx_sheet_names_foreign, key="fx_sheet_selector_foreign",
-                                                        index=st.session_state.fx_sheet_names_foreign.index(st.session_state.fx_selected_sheet_foreign) if st.session_state.fx_selected_sheet_foreign in st.session_state.fx_sheet_names_foreign else 0)
+            if fx_uploaded_file_foreign.name.endswith(".xlsx"):
+                selected_sheet_fx_foreign = st.selectbox("Select Foreign Adjacements Sheet:", st.session_state.fx_sheet_names_foreign, key="fx_sheet_selector_foreign",
+                    index=st.session_state.fx_sheet_names_foreign.index(st.session_state.fx_selected_sheet_foreign) if st.session_state.fx_selected_sheet_foreign in st.session_state.fx_sheet_names_foreign else 0)
                 if selected_sheet_fx_foreign != st.session_state.fx_selected_sheet_foreign:
                     st.session_state.fx_selected_sheet_foreign = selected_sheet_fx_foreign
-                if selected_sheet_fx_foreign:
-                    df_fx_raw_foreign = process_uploaded_file(fx_uploaded_file_foreign, sheet_name=selected_sheet_fx_foreign)
-                    st.session_state.fx_raw_df_foreign = df_fx_raw_foreign
+                    save_object(selected_sheet_fx_foreign, "fx_selected_sheet_foreign.pkl")
+                df_fx_raw_foreign = pd.read_excel(fx_uploaded_file_foreign, sheet_name=selected_sheet_fx_foreign)
+                st.session_state.fx_raw_df_foreign = df_fx_raw_foreign
             else:
                 df_fx_raw_foreign = st.session_state.fx_raw_df_foreign
 
             if not df_fx_raw_foreign.empty:
-                st.write("Foreign FX Data Preview:")
+                st.write("Foreign Adjacement Data Preview:")
                 st.dataframe(df_fx_raw_foreign.head())
 
-                st.markdown("#### Map Foreign FX Columns")
+                st.markdown("#### Map Foreign Adjacements Columns")
                 fx_column_mappings_foreign = {}
-                available_columns_foreign = df_fx_raw_foreign.columns.tolist()
-                available_columns_foreign.insert(0, "") 
+                available_columns_foreign = [""] + df_fx_raw_foreign.columns.tolist()
 
                 for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
-                    initial_selection = default_val if default_val.strip() in [col.strip() for col in df_fx_raw_foreign.columns] else ""
+                    initial_selection = (
+                        st.session_state.fx_column_mappings_foreign.get(expected_col)
+                        if expected_col in st.session_state.fx_column_mappings_foreign
+                        else default_val if default_val.strip() in [col.strip() for col in df_fx_raw_foreign.columns]
+                        else ""
+                    )
                     mapped_col = st.selectbox(
                         f"Map '{expected_col}' to:",
                         options=available_columns_foreign,
-                        index = [col.strip() for col in available_columns_foreign].index(initial_selection.strip()) if initial_selection else 0,
+                        index=available_columns_foreign.index(initial_selection) if initial_selection in available_columns_foreign else 0,
                         key=f"fx_map_foreign_{expected_col}"
                     )
                     fx_column_mappings_foreign[expected_col] = mapped_col if mapped_col else None
 
-                if st.button("Process Foreign FX Data", key="process_fx_foreign_btn"):
+                if st.button("Process Foreign Adjacements Data", key="process_fx_foreign_btn"):
                     temp_df_fx = df_fx_raw_foreign.copy()
-                    renamed_cols_dict = {}
-                    for expected_col, mapped_col in fx_column_mappings_foreign.items():
-                        if mapped_col and mapped_col in temp_df_fx.columns:
-                            renamed_cols_dict[mapped_col] = expected_col
-                    
+                    renamed_cols_dict = {mapped: expected for expected, mapped in fx_column_mappings_foreign.items() if mapped in temp_df_fx.columns}
                     temp_df_fx.rename(columns=renamed_cols_dict, inplace=True)
                     temp_df_fx.columns = temp_df_fx.columns.str.strip()
                     st.session_state.fx_trade_df_foreign = temp_df_fx
-                    st.success("Foreign FX Data Processed!")
-                    st.dataframe(st.session_state.fx_trade_df_foreign.head())
-            else:
-                st.error("Could not load Foreign FX data.")
-        else:
-            st.session_state.fx_trade_df_foreign = pd.DataFrame()
-            st.session_state.fx_uploaded_file_obj_foreign = None
-            st.session_state.fx_raw_df_foreign = pd.DataFrame()
+                    save_dataframe(temp_df_fx, "fx_trade_df_foreign.pkl")
+                    st.session_state.fx_column_mappings_foreign = fx_column_mappings_foreign
+                    save_object(fx_column_mappings_foreign, "fx_column_mappings_foreign.pkl")
+                    st.success("Foreign Adjacememts Data Processed!")
+                    st.dataframe(temp_df_fx.head())
+
 
     # Removed the bank statement upload section from here as it's now centralized in main_dashboard.py
     # st.markdown("### 🏦 Bank Statements Upload")
@@ -1148,9 +1140,80 @@ def fx_reconciliation_app(bank_dfs: dict): # Added bank_dfs as an argument
     # Debug mode checkbox
     st.session_state.debug_mode = st.checkbox("Enable Reconciliation Debug Logging", value=st.session_state.debug_mode)
 
-    if st.button("Perform Full Reconciliation (Local & Foreign FX)", key="reconcile_btn"):
+    if st.button("Perform Full Reconciliation (Local & Foreign Adjacements)", key="reconcile_btn"):
         # Pass the pre-processed bank_dfs from session state
         perform_full_reconciliation(bank_dfs)
+    
+        # Display results in expanders
+    st.markdown("### Reconciliation Results Summary")
+
+    with st.expander("Local  Matched Adjustments"):
+        if not st.session_state.df_matched_adjustments_local.empty:
+            st.dataframe(st.session_state.df_matched_adjustments_local)
+            data_to_download = st.session_state.df_matched_adjustments_local.copy().to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Local Matched Adjustments",
+                data= data_to_download,
+                file_name="matched_adjustments_local.csv",
+                mime="text/csv",
+                key=f"download_matched_local_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No local matched adjustments.")
+
+    with st.expander("Local Unmatched Adjustments"):
+        if not st.session_state.df_unmatched_adjustments_local.empty:
+            st.dataframe(st.session_state.df_unmatched_adjustments_local)
+            st.download_button(
+                label="Download Local Unmatched Adjustments",
+                data=st.session_state.df_unmatched_adjustments_local.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_adjustments_local.csv",
+                mime="text/csv",
+                key=f"download_unmatched_local_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No local unmatched adjustments.")
+    
+    with st.expander("Foreign  Matched Adjustments"):
+        if not st.session_state.df_matched_adjustments_foreign.empty:
+            st.dataframe(st.session_state.df_matched_adjustments_foreign)
+            st.download_button(
+                label="Download Foreign Matched Adjustments",
+                data=st.session_state.df_matched_adjustments_foreign.to_csv(index=False).encode('utf-8'),
+                file_name="matched_adjustments_foreign.csv",
+                mime="text/csv",
+                key=f"download_matched_foreign_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No foreign matched adjustments.")
+
+    with st.expander("Foreign Unmatched Adjustments"):
+        if not st.session_state.df_unmatched_adjustments_foreign.empty:
+            st.dataframe(st.session_state.df_unmatched_adjustments_foreign)
+            st.download_button(
+                label="Download Foreign Unmatched Adjustments",
+                data=st.session_state.df_unmatched_adjustments_foreign.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_adjustments_foreign.csv",
+                mime="text/csv",
+                key=f"download_unmatched_foreign_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No foreign unmatched adjustments.")
+
+    with st.expander("Unmatched Bank Records (Global)"):
+        if not st.session_state.df_unmatched_bank_records.empty:
+            st.dataframe(st.session_state.df_unmatched_bank_records)
+            st.download_button(
+                label="Download Unmatched Bank Records (Global)",
+                data=st.session_state.df_unmatched_bank_records.to_csv(index=False).encode('utf-8'),
+                file_name="unmatched_bank_records_global.csv",
+                mime="text/csv",
+                key=f"download_unmatched_bank_global_{uuid.uuid4()}"
+            )
+        else:
+            st.info("No unmatched bank records (global).")
+
+
 
     st.header("Analysis and Visualizations")
     if st.button("Generate Analysis and Visualizations", key="analyze_btn"):
