@@ -52,8 +52,22 @@ st.session_state.fx_trade_df_local = load_dataframe("fx_trade_df_local.pkl")
 st.session_state.fx_trade_df_foreign = load_dataframe("fx_trade_df_foreign.pkl")
 st.session_state.fx_selected_sheet_local = load_object("fx_selected_sheet_local.pkl")
 st.session_state.fx_selected_sheet_foreign = load_object("fx_selected_sheet_foreign.pkl")
-st.session_state.fx_column_mappings_local = load_object("fx_column_mappings_local.pkl", {})
-st.session_state.fx_column_mappings_foreign = load_object("fx_column_mappings_foreign.pkl", {})
+st.session_state.fx_column_mappings_local = load_object("fx_column_mappings_local.pkl", {
+    'Amount': 'Amount',
+    'Operation': 'Operation ',
+    'Completed At': 'Completed At',
+    'Intermediary Account': 'Intermediary Account',
+    'Currency': 'Currency',
+    'Status': 'Status'
+})
+st.session_state.fx_column_mappings_foreign = load_object("fx_column_mappings_foreign.pkl", {
+    'Amount': 'Amount',
+    'Operation': 'Operation ',
+    'Completed At': 'Completed At',
+    'Intermediary Account': 'Intermediary Account',
+    'Currency': 'Currency',
+    'Status': 'Status'
+})
 
 # Set Seaborn style for beautiful plots
 sns.set_theme(style="whitegrid", palette="viridis")
@@ -1096,7 +1110,14 @@ def fx_reconciliation_app(bank_dfs: dict): # Added bank_dfs as an argument
                 st.dataframe(df_fx_raw_foreign.head())
 
                 st.markdown("#### Map Foreign Adjacements Columns")
-                fx_column_mappings_foreign = {}
+                fx_column_mappings_foreign = {
+    'Amount': 'Amount',
+    'Operation': 'Operation ',
+    'Completed At': 'Completed At',
+    'Intermediary Account': 'Intermediary Account',
+    'Currency': 'Currency',
+    'Status': 'Status'
+}
                 available_columns_foreign = [""] + df_fx_raw_foreign.columns.tolist()
 
                 for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
