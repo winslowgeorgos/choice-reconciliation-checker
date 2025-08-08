@@ -15,10 +15,15 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # --- Helper Functions ---
-def save_uploaded_file(file, filename):
-    file_path = os.path.join(UPLOAD_DIR, filename)
+def save_uploaded_file(uploaded_file, filename):
+    upload_dir = "data/uploads"
+    os.makedirs(upload_dir, exist_ok=True)  # ✅ Creates the directory if it doesn't exist
+
+    file_path = os.path.join(upload_dir, filename)
+
     with open(file_path, "wb") as f:
-        f.write(file.getbuffer())
+        f.write(uploaded_file.getbuffer())
+
     return file_path
 
 def save_dataframe(df, filename):
