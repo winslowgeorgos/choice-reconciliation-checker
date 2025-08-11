@@ -120,7 +120,7 @@ if 'bank_uploaded_file_objs' not in st.session_state: st.session_state.bank_uplo
 if 'raw_bank_data_previews' not in st.session_state: st.session_state.raw_bank_data_previews = {}
 if 'merged_bank_statement' not in st.session_state: st.session_state.merged_bank_statement = pd.DataFrame()
 if "cached_bank_files" not in st.session_state: st.session_state.cached_bank_files = {}
-
+st.balloons()
 page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Cross-Match Analysis"])
 
 # --- Main App Logic ---
