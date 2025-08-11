@@ -1116,13 +1116,13 @@ def fx_reconciliation_app(bank_dfs: dict): # Added bank_dfs as an argument
 
                 st.markdown("#### Map Foreign Adjacements Columns")
                 fx_column_mappings_foreign = {
-    'Amount': 'Amount',
-    'Operation': 'Operation ',
-    'Completed At': 'Completed At',
-    'Intermediary Account': 'Intermediary Account',
-    'Currency': 'Currency',
-    'Status': 'Status'
-}
+                    'Amount': 'Amount',
+                    'Operation': 'Operation ',
+                    'Completed At': 'Completed At',
+                    'Intermediary Account': 'Intermediary Account',
+                    'Currency': 'Currency',
+                    'Status': 'Status'
+                }
                 available_columns_foreign = [""] + df_fx_raw_foreign.columns.tolist()
 
                 for expected_col, default_val in FX_EXPECTED_COLUMNS.items():
