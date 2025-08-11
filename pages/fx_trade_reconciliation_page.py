@@ -8,6 +8,58 @@ from fuzzywuzzy import process
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+import os
+import pickle
+
+# --- Constants ---
+UPLOAD_DIR = "data/uploads"
+CACHE_DIR = "data/cache"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# --- Helper Functions ---
+def save_uploaded_file(file, filename):
+    print("saving fx uploaded data : ", filename)
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    with open(file_path, "wb") as f:
+        f.write(file.getbuffer())
+    return file_path
+
+def save_dataframe(df, filename):
+    df.to_pickle(os.path.join(CACHE_DIR, filename))
+
+def load_dataframe(filename):
+    path = os.path.join(CACHE_DIR, filename)
+    return pd.read_pickle(path) if os.path.exists(path) else pd.DataFrame()
+
+def save_object(obj, filename):
+    with open(os.path.join(CACHE_DIR, filename), 'wb') as f:
+        pickle.dump(obj, f)
+
+def load_object(filename, default=None):
+    path = os.path.join(CACHE_DIR, filename)
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    return default
+
+# --- Restore session state for FX Trade Tracker ---
+st.session_state.fx_trade_tracker_df = load_dataframe("fx_trade_tracker_df.pkl")
+st.session_state.fx_trade_tracker_sheet = load_object("fx_trade_tracker_sheet.pkl")
+st.session_state.fx_trade_tracker_col_mapping = load_object("fx_trade_tracker_col_mapping.pkl", {
+                'Action Type': 'Action Type',
+                'Status': 'Status',
+                'Created At': 'Created At',
+                'Buy Currency Amount': 'Buy Currency Amount',
+                'Buy Trade Info': 'Buy Trade Info',
+                'Sell Currency Amount': 'Sell Currency Amount',
+                'Sell Trade Info': 'Sell Trade Info',
+                'Vendor ID': 'Vendor ID',
+                'Vendor Name' : 'Vendor Name',
+                'Counterparty Dealer' : 'Counterparty Dealer',
+            })
+
+
 # Set Seaborn style for beautiful plots
 sns.set_theme(style="whitegrid", palette="viridis")
 plt.rcParams['figure.figsize'] = (10, 6) # Default figure size
@@ -267,6 +319,7 @@ def process_fx_match(
         return None
 
     counterparty_raw = str(fx_row.get(bank_currency_info_field, '')).strip()
+    print("row data : ", fx_row)
     parts = counterparty_raw.split('-')
     if len(parts) < 2:
         if debug_mode:
@@ -276,6 +329,11 @@ def process_fx_match(
             'Bank Table (Expected)': f"N/A ({counterparty_raw})",
             'Action Type': action_type,
             'Amount': amount,
+            'Vendor ID': fx_row.get('Vendor ID'),
+            'Vendor Name' : fx_row.get('Vendor Name'),
+            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
+            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
+            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
             'Status': 'Invalid Bank/Currency Info in FX Trade',
             'Source Column': bank_currency_info_field
         })
@@ -314,6 +372,11 @@ def process_fx_match(
             'Bank Table (Expected)': expected_bank_key_from_fx_trade,
             'Action Type': action_type,
             'Amount': amount,
+            'Vendor ID': fx_row.get('Vendor ID'),
+            'Vendor Name' : fx_row.get('Vendor Name'),
+            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
+            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
+            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
             'Status': 'No Matching Bank Statement File Found (based on exact match from user selection)',
             'Source Column': bank_currency_info_field
         })
@@ -339,6 +402,11 @@ def process_fx_match(
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
+            'Vendor ID': fx_row.get('Vendor ID'),
+            'Vendor Name' : fx_row.get('Vendor Name'),
+            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
+            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
+            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
             'Status': f"Mapped Date Column '{date_column}' Missing in Bank Statement after pre-processing",
             'Source Column': bank_currency_info_field
         })
@@ -352,6 +420,11 @@ def process_fx_match(
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
+            'Vendor ID': fx_row.get('Vendor ID'),
+            'Vendor Name' : fx_row.get('Vendor Name'),
+            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
+            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
+            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
             'Status': 'Missing or Unresolvable Amount Column in Bank Statement based on new rules',
             'Source Column': bank_currency_info_field
         })
@@ -427,6 +500,11 @@ def process_fx_match(
             'Bank Table (Expected)': target_bank_df_key,
             'Action Type': action_type,
             'Amount': amount,
+            'Vendor ID': fx_row.get('Vendor ID'),
+            'Vendor Name' : fx_row.get('Vendor Name'),
+            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
+            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
+            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
             'Status': 'No Bank Statement Match (Amount or Date Tolerance)',
             'Source Column': bank_currency_info_field
         })
@@ -442,6 +520,8 @@ def graphed_analysis_app(all_bank_dfs: dict): # Added all_bank_dfs as an argumen
     Upload your FX Trade Tracker and Bank Statement files below.
     """)
 
+    # # --- Data Loading Section ---
+
     # --- Data Loading Section ---
     st.header("1. Data Loading")
 
@@ -449,14 +529,44 @@ def graphed_analysis_app(all_bank_dfs: dict): # Added all_bank_dfs as an argumen
     st.subheader("Upload FX Trade Tracker")
     uploaded_fx_file = st.file_uploader("Choose FX Trade Tracker (CSV or XLSX)", type=["csv", "xlsx"], key="fx_uploader")
 
+        # Initialize or load FX trade data
     fx_trade_df = pd.DataFrame()
+    if 'fx_trade_tracker_df' in st.session_state:
+        fx_trade_df = st.session_state.fx_trade_tracker_df
+    else:
+        try:
+            loaded_df = load_dataframe('fx_trade_tracker_df.pkl')
+            if not loaded_df.empty:
+                fx_trade_df = loaded_df
+                st.session_state.fx_trade_tracker_df = loaded_df
+        except Exception as e:
+            st.warning(f"Could not load cached FX trade data: {e}")
+
     if uploaded_fx_file:
         try:
+            save_uploaded_file(uploaded_fx_file, "fx_trade_uploaded." + uploaded_fx_file.name.split('.')[-1])
             if uploaded_fx_file.name.endswith('.xlsx'):
-                # For Excel, allow sheet selection
                 xls = pd.ExcelFile(uploaded_fx_file)
                 sheet_names = xls.sheet_names
-                selected_sheet = st.selectbox("Select sheet for FX Tracker", sheet_names, key="fx_sheet_selector")
+                
+                # Initialize session state if it doesn't exist
+                if 'fx_trade_tracker_sheet' not in st.session_state:
+                    st.session_state.fx_trade_tracker_sheet = sheet_names[0]  # Default to first sheet
+                
+                selected_sheet = st.selectbox(
+                    "Select sheet for FX Tracker", 
+                    sheet_names, 
+                    key="fx_sheet_selector",
+                    index=sheet_names.index(st.session_state.fx_trade_tracker_sheet) 
+                    if st.session_state.fx_trade_tracker_sheet in sheet_names 
+                    else 0
+                )
+                
+                # Update session state if selection changed
+                if selected_sheet != st.session_state.fx_trade_tracker_sheet:
+                    st.session_state.fx_trade_tracker_sheet = selected_sheet
+                    save_object(selected_sheet, "fx_trade_tracker_sheet.pkl")
+                    
                 fx_trade_df = pd.read_excel(uploaded_fx_file, sheet_name=selected_sheet)
             else:
                 fx_trade_df = pd.read_csv(uploaded_fx_file)
@@ -465,11 +575,26 @@ def graphed_analysis_app(all_bank_dfs: dict): # Added all_bank_dfs as an argumen
             st.success("FX Trade Tracker loaded successfully!")
             st.dataframe(fx_trade_df.head())
 
+            # Initialize column mapping if it doesn't exist
+            if 'fx_trade_tracker_col_mapping' not in st.session_state:
+                st.session_state.fx_trade_tracker_col_mapping = {
+                'Action Type': 'Action Type',
+                'Status': 'Status',
+                'Created At': 'Created At',
+                'Buy Currency Amount': 'Buy Currency Amount',
+                'Buy Trade Info': 'Buy Trade Info',
+                'Sell Currency Amount': 'Sell Currency Amount',
+                'Sell Trade Info': 'Sell Trade Info',
+                'Vendor ID': 'Vendor ID',
+                'Vendor Name' : 'Vendor Name',
+                'Counterparty Dealer' : 'Counterparty Dealer',
+            }
+
             # Column mapping for FX Trade Tracker
             st.subheader("FX Trade Tracker Column Mapping")
             fx_col_options = ['-- Select Column --'] + fx_trade_df.columns.tolist()
             col_mapping = {}
-            
+
             # Define the required FX columns and their default/suggested mappings
             fx_required_cols = {
                 'Action Type': 'Action Type',
@@ -478,45 +603,145 @@ def graphed_analysis_app(all_bank_dfs: dict): # Added all_bank_dfs as an argumen
                 'Buy Currency Amount': 'Buy Currency Amount',
                 'Buy Trade Info': 'Buy Trade Info',
                 'Sell Currency Amount': 'Sell Currency Amount',
-                'Sell Trade Info': 'Sell Trade Info'
+                'Sell Trade Info': 'Sell Trade Info',
+                'Vendor ID': 'Vendor ID',
+                'Vendor Name' : 'Vendor Name',
+                'Counterparty Dealer' : 'Counterparty Dealer',
             }
 
-            for display_name, suggested_col in fx_required_cols.items():
-                default_index = 0
-                if suggested_col and suggested_col in fx_col_options:
-                    default_index = fx_col_options.index(suggested_col)
+            # for display_name, suggested_col in fx_required_cols.items():
+            #     default_index = 0
+            #     if suggested_col and suggested_col in fx_col_options:
+            #         default_index = fx_col_options.index(suggested_col)
                 
+            #     selected_col = st.selectbox(
+            #         f"Map '{display_name}' to:",
+            #         options=fx_col_options,
+            #         index=default_index,
+            #         key=f"fx_map_select_{display_name}"
+            #     )
+            #     col_mapping[display_name] = selected_col if selected_col != '-- Select Column --' else None
+            print("required cols : ", st.session_state.fx_trade_tracker_col_mapping,  fx_required_cols)
+            for display_name, suggested_col in fx_required_cols.items():
+                initial_selection = (
+                    st.session_state.fx_trade_tracker_col_mapping.get(display_name)
+                    if display_name in st.session_state.fx_trade_tracker_col_mapping
+                    else suggested_col if suggested_col in fx_col_options
+                    else '-- Select Column --'
+                )
                 selected_col = st.selectbox(
                     f"Map '{display_name}' to:",
                     options=fx_col_options,
-                    index=default_index,
+                    index=fx_col_options.index(initial_selection) if initial_selection in fx_col_options else 0,
                     key=f"fx_map_select_{display_name}"
                 )
                 col_mapping[display_name] = selected_col if selected_col != '-- Select Column --' else None
 
-            # Apply mapping
-            renamed_fx_df = pd.DataFrame() 
-            mapped_columns_dict = {}
-
-            for original_name, selected_map in col_mapping.items():
-                if selected_map: 
-                    mapped_columns_dict[selected_map] = original_name
+            renamed_fx_df = pd.DataFrame()
+            mapped_columns_dict = {selected: original for original, selected in col_mapping.items() if selected and selected in fx_trade_df.columns}
 
             if mapped_columns_dict:
-                cols_to_keep = [col for col in mapped_columns_dict.keys() if col in fx_trade_df.columns]
+                cols_to_keep = list(mapped_columns_dict.keys())
                 renamed_fx_df = fx_trade_df[cols_to_keep].rename(columns=mapped_columns_dict)
-                fx_trade_df = renamed_fx_df 
+                fx_trade_df = renamed_fx_df
                 st.success("FX Trade Tracker columns mapped successfully!")
                 st.dataframe(fx_trade_df.head())
             else:
                 st.warning("No FX Trade Tracker columns mapped. Proceeding with original column names.")
-                # fx_trade_df remains unchanged if no mapping selected
-                # This could lead to errors if expected columns are missing later.
-                # Consider adding a check before reconciliation.
 
+            st.session_state.fx_trade_tracker_df = fx_trade_df
+            save_dataframe(fx_trade_df, "fx_trade_tracker_df.pkl")
+            st.session_state.fx_trade_tracker_col_mapping = {
+                'Action Type': 'Action Type',
+                'Status': 'Status',
+                'Created At': 'Created At',
+                'Buy Currency Amount': 'Buy Currency Amount',
+                'Buy Trade Info': 'Buy Trade Info',
+                'Sell Currency Amount': 'Sell Currency Amount',
+                'Sell Trade Info': 'Sell Trade Info',
+                'Vendor ID': 'Vendor ID',
+                'Vendor Name' : 'Vendor Name',
+                'Counterparty Dealer' : 'Counterparty Dealer',
+            }
+            save_object(col_mapping, "fx_trade_tracker_col_mapping.pkl")
 
         except Exception as e:
             st.error(f"Error loading FX Trade Tracker: {e}")
+
+    # st.header("1. Data Loading")
+
+    # # FX Trade Tracker Upload
+    # st.subheader("Upload FX Trade Tracker")
+    # uploaded_fx_file = st.file_uploader("Choose FX Trade Tracker (CSV or XLSX)", type=["csv", "xlsx"], key="fx_uploader")
+
+    # fx_trade_df = pd.DataFrame()
+    # if uploaded_fx_file:
+    #     try:
+    #         if uploaded_fx_file.name.endswith('.xlsx'):
+    #             # For Excel, allow sheet selection
+    #             xls = pd.ExcelFile(uploaded_fx_file)
+    #             sheet_names = xls.sheet_names
+    #             selected_sheet = st.selectbox("Select sheet for FX Tracker", sheet_names, key="fx_sheet_selector")
+    #             fx_trade_df = pd.read_excel(uploaded_fx_file, sheet_name=selected_sheet)
+    #         else:
+    #             fx_trade_df = pd.read_csv(uploaded_fx_file)
+
+    #         fx_trade_df.columns = fx_trade_df.columns.str.strip()
+    #         st.success("FX Trade Tracker loaded successfully!")
+    #         st.dataframe(fx_trade_df.head())
+
+    #         # Column mapping for FX Trade Tracker
+    #         st.subheader("FX Trade Tracker Column Mapping")
+    #         fx_col_options = ['-- Select Column --'] + fx_trade_df.columns.tolist()
+    #         col_mapping = {}
+            
+    #         # Define the required FX columns and their default/suggested mappings
+    #         fx_required_cols = {
+    #             'Action Type': 'Action Type',
+    #             'Status': 'Status',
+    #             'Created At': 'Created At',
+    #             'Buy Currency Amount': 'Buy Currency Amount',
+    #             'Buy Trade Info': 'Buy Trade Info',
+    #             'Sell Currency Amount': 'Sell Currency Amount',
+    #             'Sell Trade Info': 'Sell Trade Info'
+    #         }
+
+    #         for display_name, suggested_col in fx_required_cols.items():
+    #             default_index = 0
+    #             if suggested_col and suggested_col in fx_col_options:
+    #                 default_index = fx_col_options.index(suggested_col)
+                
+    #             selected_col = st.selectbox(
+    #                 f"Map '{display_name}' to:",
+    #                 options=fx_col_options,
+    #                 index=default_index,
+    #                 key=f"fx_map_select_{display_name}"
+    #             )
+    #             col_mapping[display_name] = selected_col if selected_col != '-- Select Column --' else None
+
+    #         # Apply mapping
+    #         renamed_fx_df = pd.DataFrame() 
+    #         mapped_columns_dict = {}
+
+    #         for original_name, selected_map in col_mapping.items():
+    #             if selected_map: 
+    #                 mapped_columns_dict[selected_map] = original_name
+
+    #         if mapped_columns_dict:
+    #             cols_to_keep = [col for col in mapped_columns_dict.keys() if col in fx_trade_df.columns]
+    #             renamed_fx_df = fx_trade_df[cols_to_keep].rename(columns=mapped_columns_dict)
+    #             fx_trade_df = renamed_fx_df 
+    #             st.success("FX Trade Tracker columns mapped successfully!")
+    #             st.dataframe(fx_trade_df.head())
+    #         else:
+    #             st.warning("No FX Trade Tracker columns mapped. Proceeding with original column names.")
+    #             # fx_trade_df remains unchanged if no mapping selected
+    #             # This could lead to errors if expected columns are missing later.
+    #             # Consider adding a check before reconciliation.
+
+
+    #     except Exception as e:
+    #         st.error(f"Error loading FX Trade Tracker: {e}")
 
     # Removed Bank Statements Upload and Pre-processing section as it's now centralized
     # st.subheader("Upload Bank Statement(s)")

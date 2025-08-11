@@ -6,6 +6,13 @@ from typing import Tuple
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+st.session_state.newly_matched_unmatched_bank_records_df = pd.DataFrame()
+st.session_state.still_unmatched_bank_records_df  = pd.DataFrame()
+st.session_state.newly_matched_unmatched_adjustments_df  = pd.DataFrame()
+st.session_state.still_unmatched_adjustments_df  = pd.DataFrame()
+st.session_state.combined_unmatched_bank_records_df  = pd.DataFrame()
+st.session_state.unique_still_unmatched_bank_records_df = pd.DataFrame()
+
 def run_cross_match_analysis(
     df_matched_adjustments_local: pd.DataFrame,
     df_matched_adjustments_foreign: pd.DataFrame,
@@ -162,12 +169,12 @@ def run_cross_match_analysis(
     if not still_unmatched_bank_records_df.empty:
         unique_cols = ['BankTable', 'Description', 'Date', 'TransactionType', 'Amount']
         unique_still_unmatched_bank_records_df = still_unmatched_bank_records_df.drop_duplicates(subset=unique_cols, keep='first').copy()
+
     else:
         unique_still_unmatched_bank_records_df = pd.DataFrame()
 
 
-    # --- Step 4: Handle Unmatched Adjustment Records ---
-    st.subheader("Cross-Matching Unmatched Adjustment Records")
+    
 
     combined_unmatched_adjustments_df = pd.concat([
         df_unmatched_adjustments_local.assign(Source='FX Reconciliation App - Local'),
@@ -176,63 +183,9 @@ def run_cross_match_analysis(
 
     newly_matched_unmatched_adjustments_df = pd.DataFrame()
     still_unmatched_adjustments_df = combined_unmatched_adjustments_df
-
-
-    # --- Step 5: Display Results ---
-    st.markdown("---")
-    st.subheader("Combined Unmatched Bank Records (Before Cross-Match)")
-    if not combined_unmatched_bank_records_df.empty:
-        st.dataframe(combined_unmatched_bank_records_df)
-        st.download_button(
-            label="Download Combined Unmatched Bank Records (Original)",
-            data=combined_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Combined_Unmatched_Bank_Records_Original.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("No combined unmatched bank records to display.")
-
-    st.markdown("---")
-    st.subheader("Newly Found Matches (from Unmatched Bank Records)")
-    if not newly_matched_unmatched_bank_records_df.empty:
-        st.write("These bank records were previously flagged as unmatched by one reconciliation app but were found to have a corresponding match in the other reconciliation app's matched data.")
-        st.dataframe(newly_matched_unmatched_bank_records_df)
-        st.download_button(
-            label="Download Newly Matched Bank Records",
-            data=newly_matched_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Newly_Matched_Bank_Records.csv",
-            mime="text/csv"
-        )
-    else:
-        st.success("No new matches were found in the unmatched bank records from cross-analysis.")
-
-    st.markdown("---")
-    st.subheader("Still Unmatched Bank Records (After Cross-Match)")
-    if not still_unmatched_bank_records_df.empty:
-        st.write("These records remain unmatched even after the cross-match analysis against all matched data.")
-        st.dataframe(still_unmatched_bank_records_df)
-        st.download_button(
-            label="Download All Still Unmatched Bank Records",
-            data=still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Still_Unmatched_Bank_Records.csv",
-            mime="text/csv"
-        )
-    else:
-        st.success("All bank records were matched or found to have a corresponding entry after cross-match.")
     
-    st.markdown("---")
-    st.subheader("Unique Still Unmatched Bank Records")
-    if not unique_still_unmatched_bank_records_df.empty:
-        st.write("This table shows a de-duplicated view of the 'Still Unmatched Bank Records', returning only unique records based on **BankTable, Description, Date, TransactionType, and Amount**.")
-        st.dataframe(unique_still_unmatched_bank_records_df)
-        st.download_button(
-            label="Download Unique Still Unmatched Bank Records",
-            data=unique_still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Unique_Still_Unmatched_Bank_Records.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("No unique unmatched bank records to display.")
+
+
     
     # --- NEW VISUALIZATION AND ANALYSIS SECTION START ---
     st.markdown("---")
@@ -283,19 +236,13 @@ def run_cross_match_analysis(
 
     # --- NEW VISUALIZATION AND ANALYSIS SECTION END ---
 
-    st.markdown("---")
-    st.subheader("Combined Unmatched Adjustments (from FX Reconciliation App)")
-    if not still_unmatched_adjustments_df.empty:
-        st.write("These are the adjustments that remain unmatched from the FX Reconciliation App, even after the initial reconciliation.")
-        st.dataframe(still_unmatched_adjustments_df)
-        st.download_button(
-            label="Download Combined Unmatched Adjustments",
-            data=still_unmatched_adjustments_df.to_csv(index=False).encode('utf-8'),
-            file_name="Combined_Unmatched_Adjustments.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("No combined unmatched adjustments to display.")
+    st.session_state.newly_matched_unmatched_bank_records_df = newly_matched_unmatched_bank_records_df
+    st.session_state.still_unmatched_bank_records_df  = still_unmatched_bank_records_df
+    st.session_state.newly_matched_unmatched_adjustments_df  = newly_matched_unmatched_adjustments_df
+    st.session_state.still_unmatched_adjustments_df  = still_unmatched_adjustments_df
+    st.session_state.combined_unmatched_bank_records_df  = combined_unmatched_bank_records_df
+    st.session_state.unique_still_unmatched_bank_records_df = unique_still_unmatched_bank_records_df
+
 
 
     return (
@@ -309,7 +256,86 @@ def run_cross_match_analysis(
 
 # A small helper function to simulate the app flow for testing.
 def cross_match_analysis_app():
-    st.info("The Cross-Match Analysis will be triggered by the main dashboard.")
+    
+    
+    newly_matched_unmatched_bank_records_df = st.session_state.newly_matched_unmatched_bank_records_df 
+    still_unmatched_bank_records_df = st.session_state.still_unmatched_bank_records_df
+    newly_matched_unmatched_adjustments_df = st.session_state.newly_matched_unmatched_adjustments_df
+    still_unmatched_adjustments_df = st.session_state.still_unmatched_adjustments_df  
+    combined_unmatched_bank_records_df = st.session_state.combined_unmatched_bank_records_df
+    unique_still_unmatched_bank_records_df = st.session_state.unique_still_unmatched_bank_records_df
+
+    # st.info("The Cross-Match Analysis will be triggered by the main dashboard.")
+    st.markdown("---")
+    st.subheader("Combined Unmatched Adjustments (from FX Reconciliation App)")
+    if not still_unmatched_adjustments_df.empty:
+        st.write("These are the adjustments that remain unmatched from the FX Reconciliation App, even after the initial reconciliation.")
+        st.dataframe(still_unmatched_adjustments_df)
+        st.download_button(
+            label="Download Combined Unmatched Adjustments",
+            data=still_unmatched_adjustments_df.to_csv(index=False).encode('utf-8'),
+            file_name="Combined_Unmatched_Adjustments.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No combined unmatched adjustments to display.")
+    
+    # --- Step 5: Display Results ---
+    st.markdown("---")
+    st.subheader("Combined Unmatched Bank Records (Before Cross-Match)")
+
+    if not combined_unmatched_bank_records_df.empty:
+        st.dataframe(combined_unmatched_bank_records_df)
+        st.download_button(
+            label="Download Combined Unmatched Bank Records (Original)",
+            data=combined_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
+            file_name="Combined_Unmatched_Bank_Records_Original.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No combined unmatched bank records to display.")
+
+    st.markdown("---")
+    st.subheader("Newly Found Matches (from Unmatched Bank Records)")
+    if not newly_matched_unmatched_bank_records_df.empty:
+        st.write("These bank records were previously flagged as unmatched by one reconciliation app but were found to have a corresponding match in the other reconciliation app's matched data.")
+        st.dataframe(newly_matched_unmatched_bank_records_df)
+        st.download_button(
+            label="Download Newly Matched Bank Records",
+            data=newly_matched_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
+            file_name="Newly_Matched_Bank_Records.csv",
+            mime="text/csv"
+        )
+    else:
+        st.success("No new matches were found in the unmatched bank records from cross-analysis.")
+
+    st.markdown("---")
+    st.subheader("Still Unmatched Bank Records (After Cross-Match)")
+    if not still_unmatched_bank_records_df.empty:
+        st.write("These records remain unmatched even after the cross-match analysis against all matched data.")
+        st.dataframe(still_unmatched_bank_records_df)
+        st.download_button(
+            label="Download All Still Unmatched Bank Records",
+            data=still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
+            file_name="Still_Unmatched_Bank_Records.csv",
+            mime="text/csv"
+        )
+    else:
+        st.success("All bank records were matched or found to have a corresponding entry after cross-match.")
+
+    st.markdown("---")
+    st.subheader("Unique Still Unmatched Bank Records")
+    if not unique_still_unmatched_bank_records_df.empty:
+        st.write("This table shows a de-duplicated view of the 'Still Unmatched Bank Records', returning only unique records based on **BankTable, Description, Date, TransactionType, and Amount**.")
+        st.dataframe(unique_still_unmatched_bank_records_df)
+        st.download_button(
+            label="Download Unique Still Unmatched Bank Records",
+            data=unique_still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
+            file_name="Unique_Still_Unmatched_Bank_Records.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No unique unmatched bank records to display.")
 
 if __name__ == '__main__':
     st.title("Cross-Match Analysis App")

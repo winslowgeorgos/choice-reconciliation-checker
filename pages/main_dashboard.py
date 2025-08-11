@@ -1,4 +1,5 @@
 import streamlit as st
+from io import BytesIO
 import pandas as pd
 from datetime import datetime, timedelta # Import timedelta for date operations
 import io # Import io for file operations
@@ -6,9 +7,9 @@ import io # Import io for file operations
 # Import functions from other pages
 from fx_reconcilliation_app_page import fx_reconciliation_app
 from fx_trade_reconciliation_page import graphed_analysis_app
-from combine_match_results_page import run_cross_match_analysis
+from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
 
-st.set_page_config(page_title="FX Reconciliation Dashboard", layout="wide")
+st.set_page_config(page_title="Finance(FX) Reconciliation Dashboard", layout="wide")
 
 # --- Constants and Global Mappings (Copied from fx_reconcilliation_app_page.py for centralized use) ---
 DATE_FORMATS = [
@@ -190,79 +191,118 @@ if 'merged_bank_statement' not in st.session_state:
 # Sidebar navigation
 page_selection = st.sidebar.radio("Go to", [
     "Bank Statement Management", # New section for centralized bank uploads
-    "FX Reconciliation",
-    "Graphed Analysis",
+    "Adjacements Reconciliation",
+    "FX Trade Reconciliation",
     "Cross-Match Analysis"
 ])
 
 
 # ... (rest of the code is the same until the button) ...
 
+
+from io import BytesIO
+
 if page_selection == "Bank Statement Management":
     st.title("Bank Statement Management")
     st.markdown("Upload and configure your bank statements here. These statements will then be available for all reconciliation modules.")
 
-    bank_uploaded_files = st.file_uploader("Upload Bank Statement(s) (CSV/Excel)", type=["csv", "xlsx"], accept_multiple_files=True, key="bank_uploader_main")
+    uploaded_files = st.file_uploader(
+        "Upload Bank Statement(s) (CSV/Excel)",
+        type=["csv", "xlsx"],
+        accept_multiple_files=True,
+        key="bank_uploader_main"
+    )
 
-    # Only update raw_bank_data_previews if new files are uploaded or files are removed
-    if bank_uploaded_files != st.session_state.bank_uploaded_file_objs:
-        st.session_state.bank_uploaded_file_objs = bank_uploaded_files
-        st.session_state.raw_bank_data_previews = {} # Reset for new uploads
-        for i, file in enumerate(bank_uploaded_files):
-            initial_file_key = f"file_{i}_{file.name.lower().replace('.', '_')}"
-            st.session_state.raw_bank_data_previews[initial_file_key] = {
-                'file_obj': file,
-                'df_raw': pd.DataFrame(),
-                'sheet_names': [],
-                'selected_sheet': None,
-                'column_mappings': {},
-                'standardized_name': ""
-            }
-            if file.name.endswith('.xlsx'):
-                st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names'] = get_excel_sheet_names(file)
-                if st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names']:
-                    st.session_state.raw_bank_data_previews[initial_file_key]['selected_sheet'] = st.session_state.raw_bank_data_previews[initial_file_key]['sheet_names'][0]
-                    st.session_state.raw_bank_data_previews[initial_file_key]['df_raw'] = process_uploaded_file(file, sheet_name=st.session_state.raw_bank_data_previews[initial_file_key]['selected_sheet'])
-            else:
-                st.session_state.raw_bank_data_previews[initial_file_key]['df_raw'] = process_uploaded_file(file)
+    if "cached_bank_files" not in st.session_state:
+        st.session_state.cached_bank_files = {}
+    if "raw_bank_data_previews" not in st.session_state:
+        st.session_state.raw_bank_data_previews = {}
 
-    if st.session_state.raw_bank_data_previews:
-        current_bank_data_previews = list(st.session_state.raw_bank_data_previews.items())
+    if uploaded_files:
+        for file in uploaded_files:
+            if file.name not in st.session_state.cached_bank_files:
+                st.session_state.cached_bank_files[file.name] = {
+                    "content": file.read(),
+                    "type": file.type
+                }
 
-        for i, (file_key, data) in enumerate(current_bank_data_previews):
-            with st.expander(f"Configure {data['file_obj'].name}", expanded=True):
-                st.markdown(f"#### Configuration for {data['file_obj'].name}")
-                
+    files_to_delete = []
+
+    if st.session_state.cached_bank_files:
+        st.markdown("### Uploaded Bank Statements:")
+        for file_name, file_data in st.session_state.cached_bank_files.items():
+            file_key = file_name.lower().replace('.', '_')  # ✅ Stable key
+
+            with st.expander(f"🗂️ {file_name}", expanded=True):
+                col1, col2 = st.columns([8, 2])
+                with col1:
+                    st.markdown(f"**File Name:** `{file_name}`")
+                with col2:
+                    if st.button("❌ Remove", key=f"remove_{file_name}"):
+                        files_to_delete.append(file_name)
+                        continue
+
+                # Rehydrate and parse file if not already done
+                if file_key not in st.session_state.raw_bank_data_previews:
+                    file_bytes = file_data["content"]
+                    fake_file = BytesIO(file_bytes)
+                    fake_file.name = file_name
+
+                    if file_name.endswith('.xlsx'):
+                        sheet_names = get_excel_sheet_names(fake_file)
+                        selected_sheet = sheet_names[0] if sheet_names else None
+                        df = process_uploaded_file(fake_file, sheet_name=selected_sheet)
+                    else:
+                        sheet_names = []
+                        selected_sheet = None
+                        df = process_uploaded_file(BytesIO(file_bytes))
+
+                    st.session_state.raw_bank_data_previews[file_key] = {
+                        'file_obj': fake_file,
+                        'df_raw': df,
+                        'sheet_names': sheet_names,
+                        'selected_sheet': selected_sheet,
+                        'column_mappings': {},
+                        'standardized_name': ""
+                    }
+
+                data = st.session_state.raw_bank_data_previews[file_key]
+
+                # Standardized Name
                 selected_standardized_name = st.selectbox(
-                    f"Select Standardized Name for {data['file_obj'].name}:",
+                    f"Select Standardized Name for {file_name}:",
                     options=[""] + PREDEFINED_BANK_CURRENCY_OPTIONS,
                     index=PREDEFINED_BANK_CURRENCY_OPTIONS.index(data['standardized_name']) + 1 if data['standardized_name'] in PREDEFINED_BANK_CURRENCY_OPTIONS else 0,
                     key=f"standardized_name_selector_{file_key}"
                 )
-                st.session_state.raw_bank_data_previews[file_key]['standardized_name'] = selected_standardized_name
+                data['standardized_name'] = selected_standardized_name
 
                 df_bank_raw = data['df_raw']
-                
-                if data['file_obj'].name.endswith('.xlsx'):
-                    current_sheet = st.selectbox(f"Select Sheet for {data['file_obj'].name}:", data['sheet_names'],
-                                                    index=data['sheet_names'].index(data['selected_sheet']) if data['selected_sheet'] in data['sheet_names'] else 0,
-                                                    key=f"bank_sheet_selector_{file_key}")
+
+                if file_name.endswith('.xlsx') and data['sheet_names']:
+                    current_sheet = st.selectbox(
+                        f"Select Sheet for {file_name}:",
+                        data['sheet_names'],
+                        index=data['sheet_names'].index(data['selected_sheet']) if data['selected_sheet'] in data['sheet_names'] else 0,
+                        key=f"bank_sheet_selector_{file_key}"
+                    )
                     if current_sheet != data['selected_sheet']:
-                        st.session_state.raw_bank_data_previews[file_key]['selected_sheet'] = current_sheet
-                        st.session_state.raw_bank_data_previews[file_key]['df_raw'] = process_uploaded_file(data['file_obj'], sheet_name=current_sheet)
-                        df_bank_raw = st.session_state.raw_bank_data_previews[file_key]['df_raw']
+                        data['selected_sheet'] = current_sheet
+                        fake_file = BytesIO(file_data["content"])
+                        fake_file.name = file_name
+                        df_bank_raw = process_uploaded_file(fake_file, sheet_name=current_sheet)
+                        data['df_raw'] = df_bank_raw
 
                 if not df_bank_raw.empty:
-                    st.write(f"Preview of {data['file_obj'].name}:")
+                    st.write("**Preview:**")
                     st.dataframe(df_bank_raw.head())
 
                     available_columns = df_bank_raw.columns.tolist()
                     available_columns.insert(0, "")
-
-                    current_file_mappings = data['column_mappings']
+                    current_mappings = data['column_mappings']
 
                     for expected_col, default_val_list in BANK_EXPECTED_COLUMNS.items():
-                        initial_selection = current_file_mappings.get(expected_col)
+                        initial_selection = current_mappings.get(expected_col)
                         if not initial_selection:
                             for default_val in default_val_list:
                                 if default_val.strip() in [col.strip() for col in df_bank_raw.columns]:
@@ -270,98 +310,90 @@ if page_selection == "Bank Statement Management":
                                     break
 
                         mapped_col = st.selectbox(
-                            f"Map '{expected_col}' (or main amount) to:",
+                            f"Map '{expected_col}' to:",
                             options=available_columns,
                             index=available_columns.index(initial_selection) if initial_selection and initial_selection in available_columns else 0,
                             key=f"bank_map_{file_key}_{expected_col}"
                         )
-                        st.session_state.raw_bank_data_previews[file_key]['column_mappings'][expected_col] = mapped_col if mapped_col else None
+                        data['column_mappings'][expected_col] = mapped_col if mapped_col else None
                 else:
-                    st.error(f"Could not load bank data from {data['file_obj'].name}.")
-        
-        if st.button("Process All Bank Statements", key="process_all_bank_btn_main"):
-            st.session_state.bank_dfs = {}
-            all_processed_successfully = True
-            
-            # Temporary list to hold DataFrames for concatenation
-            dfs_to_concat = []
+                    st.error(f"Could not load data from {file_name}.")
 
-            for file_key, data in st.session_state.raw_bank_data_previews.items():
-                if not data['standardized_name']:
-                    st.warning(f"Please select a standardized name for '{data['file_obj'].name}' before processing.")
-                    all_processed_successfully = False
-                    continue
+    # Remove deleted file info
+    for file_name in files_to_delete:
+        st.session_state.cached_bank_files.pop(file_name, None)
+        file_key = file_name.lower().replace('.', '_')
+        st.session_state.raw_bank_data_previews.pop(file_key, None)
 
-                df_to_process = data['df_raw'].copy()
-                renamed_cols_dict = {}
-                for expected_col, mapped_col in data['column_mappings'].items():
-                    if mapped_col and mapped_col in df_to_process.columns:
-                        renamed_cols_dict[mapped_col] = expected_col
-                
-                if renamed_cols_dict:
-                    df_to_process.rename(columns=renamed_cols_dict, inplace=True)
-                df_to_process.columns = df_to_process.columns.str.strip()
-
-                if 'Date' in df_to_process.columns:
-                    df_to_process['Date'] = df_to_process['Date'].apply(parse_date)
-                    df_to_process = df_to_process[df_to_process['Date'].notna()].copy()
-                else:
-                    st.error(f"Error: 'Date' column not found in '{data['file_obj'].name}' after mapping. This file cannot be processed for reconciliation.")
-                    all_processed_successfully = False
-                    continue
-
-                if 'Credit' in df_to_process.columns:
-                    df_to_process['Credit'] = df_to_process['Credit'].apply(safe_float)
-                if 'Debit' in df_to_process.columns:
-                    df_to_process['Debit'] = df_to_process['Debit'].apply(safe_float)
-                
-                df_to_process["Matched"] = False
-                
-                # Add a 'Bank' column to identify the source of the data
-                df_to_process['Bank'] = data['standardized_name']
-
-                st.session_state.bank_dfs[data['standardized_name']] = df_to_process
-                st.success(f"Processed and applied mappings for {data['file_obj'].name} as '{data['standardized_name']}'!")
-                st.dataframe(st.session_state.bank_dfs[data['standardized_name']].head())
-
-                dfs_to_concat.append(df_to_process)
-            
-            if all_processed_successfully and dfs_to_concat:
-                # Merge all DataFrames into one, ignoring the original index
-                st.session_state.merged_bank_statement = pd.concat(dfs_to_concat, ignore_index=True)
-                st.write("All Bank Statements Processed and Stored!")
-            elif all_processed_successfully and not dfs_to_concat:
-                st.info("No valid files were processed to create a combined statement.")
-            else:
-                st.warning("Some bank statements could not be processed due to errors. Please check the logs above.")
-    else:
+    # Processing Button
+    if st.button("Process All Bank Statements", key="process_all_bank_btn_main"):
         st.session_state.bank_dfs = {}
-        st.session_state.bank_uploaded_file_objs = []
-        st.session_state.raw_bank_data_previews = {}
-    
-    # --- New Feature: Display and Download Merged DataFrame ---
+        all_success = True
+        dfs_to_concat = []
+
+        for file_key, data in st.session_state.raw_bank_data_previews.items():
+            if not data['standardized_name']:
+                st.warning(f"Missing standardized name for '{data['file_obj'].name}'")
+                all_success = False
+                continue
+
+            df_to_process = data['df_raw'].copy()
+            renamed_cols = {}
+            for expected_col, mapped_col in data['column_mappings'].items():
+                if mapped_col and mapped_col in df_to_process.columns:
+                    renamed_cols[mapped_col] = expected_col
+            if renamed_cols:
+                df_to_process.rename(columns=renamed_cols, inplace=True)
+            df_to_process.columns = df_to_process.columns.str.strip()
+
+            if 'Date' in df_to_process.columns:
+                df_to_process['Date'] = df_to_process['Date'].apply(parse_date)
+                df_to_process = df_to_process[df_to_process['Date'].notna()].copy()
+            else:
+                st.error(f"'Date' column missing in '{data['file_obj'].name}'")
+                all_success = False
+                continue
+
+            if 'Credit' in df_to_process.columns:
+                df_to_process['Credit'] = df_to_process['Credit'].apply(safe_float)
+            if 'Debit' in df_to_process.columns:
+                df_to_process['Debit'] = df_to_process['Debit'].apply(safe_float)
+
+            df_to_process["Matched"] = False
+            df_to_process['Bank'] = data['standardized_name']
+            st.session_state.bank_dfs[data['standardized_name']] = df_to_process
+            st.success(f"Processed: {data['file_obj'].name} as '{data['standardized_name']}'")
+            dfs_to_concat.append(df_to_process)
+
+        if all_success and dfs_to_concat:
+            st.session_state.merged_bank_statement = pd.concat(dfs_to_concat, ignore_index=True)
+            st.write("✅ All bank statements processed and merged.")
+        elif all_success and not dfs_to_concat:
+            st.info("⚠️ No valid files processed.")
+        else:
+            st.warning("⚠️ Some files could not be processed. See messages above.")
+
+    # Merged Statement
     st.markdown("---")
     st.header("Merged Bank Statement for Display and Download")
-    if not st.session_state.merged_bank_statement.empty:
-        st.write("Combined statement from all processed bank files:")
+
+    if not st.session_state.get("merged_bank_statement", pd.DataFrame()).empty:
+        st.write("### Combined Merged Statement:")
         st.dataframe(st.session_state.merged_bank_statement)
 
-        # Create a download button for the merged dataframe
-        csv = st.session_state.merged_bank_statement.to_csv(index=False).encode('utf-8')
+        csv = st.session_state.merged_bank_statement.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="Download Merged Bank Statement as CSV",
+            label="⬇️ Download Merged Bank Statement as CSV",
             data=csv,
             file_name="merged_bank_statement.csv",
             mime="text/csv",
         )
     else:
-        st.info("No bank statements have been processed yet to create a merged view.")
-
-# ... (rest of the code is the same) ...
+        st.info("No merged bank statement available yet.")
 
 # Conditional rendering for other pages
-elif page_selection == "FX Reconciliation":
-    st.title("FX Reconciliation App")
+elif page_selection == "Adjacements Reconciliation":
+    st.title("Local & Foreign Adjacements Reconciliation App")
     # Check if bank statements are loaded
     if not st.session_state.bank_dfs:
         st.warning("Please go to 'Bank Statement Management' to upload and process bank statements first.")
@@ -375,7 +407,7 @@ elif page_selection == "FX Reconciliation":
 
         ) = fx_reconciliation_app(st.session_state.bank_dfs)
 
-elif page_selection == "Graphed Analysis":
+elif page_selection == "FX Trade Reconciliation":
     st.title("FX Trade Reconciliation App")
     # Check if bank statements are loaded
     if not st.session_state.bank_dfs:
@@ -398,7 +430,7 @@ elif page_selection == "Cross-Match Analysis":
         st.session_state.df_matched_adjustments_foreign.empty and
         st.session_state.df_matched_counterparty.empty and
         st.session_state.df_matched_choice.empty):
-        st.warning("Please first run the 'FX Reconciliation' and 'Graphed Analysis' apps to populate the dataframes needed for cross-matching.")
+        st.warning("Please first run the 'Adjacements Reconciliation' and 'FX Trade Reconciliation' apps to populate the dataframes needed for cross-matching.")
     else:
         if st.button("Perform Cross-Match Analysis"):
             with st.spinner("Performing cross-match analysis..."):
@@ -413,6 +445,8 @@ elif page_selection == "Cross-Match Analysis":
                     st.session_state.df_unmatched_bank_trade, # This is from fx_trade_reconciliation_page
                     debug_mode=st.session_state.debug_mode
                 )
+              
         else:
             st.info("Click the button above to run the cross-match analysis.")
+        cross_match_analysis_app()
 
