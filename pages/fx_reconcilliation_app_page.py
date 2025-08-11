@@ -53,26 +53,8 @@ FX_EXPECTED_COLUMNS = {
 }
 
 # --- Restore session state ---
-st.session_state.fx_trade_df_local = load_dataframe("fx_trade_df_local.pkl")
-st.session_state.fx_trade_df_foreign = load_dataframe("fx_trade_df_foreign.pkl")
-st.session_state.fx_selected_sheet_local = load_object("fx_selected_sheet_local.pkl")
-st.session_state.fx_selected_sheet_foreign = load_object("fx_selected_sheet_foreign.pkl")
-st.session_state.fx_column_mappings_local = load_object("fx_column_mappings_local.pkl", {
-    'Amount': 'Amount',
-    'Operation': 'Operation ',
-    'Completed At': 'Completed At',
-    'Intermediary Account': 'Intermediary Account',
-    'Currency': 'Currency',
-    'Status': 'Status'
-})
-st.session_state.fx_column_mappings_foreign = load_object("fx_column_mappings_foreign.pkl", {
-    'Amount': 'Amount',
-    'Operation': 'Operation ',
-    'Completed At': 'Completed At',
-    'Intermediary Account': 'Intermediary Account',
-    'Currency': 'Currency',
-    'Status': 'Status'
-})
+# This block is now part of the fx_reconciliation_app function to ensure it runs on every page load
+# and to prevent the AttributeError.
 
 # Set Seaborn style for beautiful plots
 sns.set_theme(style="whitegrid", palette="viridis")
@@ -807,6 +789,30 @@ def perform_data_analysis_and_visualizations():
 # --- Streamlit App Layout ---
 
 def fx_reconciliation_app(bank_dfs: dict): # Added bank_dfs as an argument
+    
+    # Restore session state variables and set defaults at the beginning of the function
+    # This ensures they are always present, preventing the AttributeError
+    st.session_state.fx_trade_df_local = load_dataframe("fx_trade_df_local.pkl")
+    st.session_state.fx_trade_df_foreign = load_dataframe("fx_trade_df_foreign.pkl")
+    st.session_state.fx_selected_sheet_local = load_object("fx_selected_sheet_local.pkl")
+    st.session_state.fx_selected_sheet_foreign = load_object("fx_selected_sheet_foreign.pkl")
+    st.session_state.fx_column_mappings_local = load_object("fx_column_mappings_local.pkl", {
+        'Amount': 'Amount',
+        'Operation': 'Operation ',
+        'Completed At': 'Completed At',
+        'Intermediary Account': 'Intermediary Account',
+        'Currency': 'Currency',
+        'Status': 'Status'
+    })
+    st.session_state.fx_column_mappings_foreign = load_object("fx_column_mappings_foreign.pkl", {
+        'Amount': 'Amount',
+        'Operation': 'Operation ',
+        'Completed At': 'Completed At',
+        'Intermediary Account': 'Intermediary Account',
+        'Currency': 'Currency',
+        'Status': 'Status'
+    })
+
 
     st.set_page_config(layout="wide", page_title="Adjustment Reconciliation Dashboard")
 
@@ -1010,7 +1016,7 @@ def fx_reconciliation_app(bank_dfs: dict): # Added bank_dfs as an argument
             st.rerun()  # Use st.rerun() instead of st.experimental_rerun()
 
         # --- Local FX Tracker Upload ---
-        st.markdown("### 📅 Local Currency Account Ajacements Upload")
+        st.markdown("### 📅 Local Currency Account Adjacements Upload")
         fx_uploaded_file_local = st.file_uploader("Upload Local adjacements (CSV/Excel)", type=["csv", "xlsx"], key="fx_uploader_local")
 
         if fx_uploaded_file_local:
