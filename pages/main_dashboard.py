@@ -235,7 +235,7 @@ if page_selection == "Bank Statement Management":
     if st.button("Process All Bank Statements", key="process_all_bank_btn_main"):
         st.session_state.bank_dfs = {}
         ## change all success to True to also solve the issue
-        all_success = False
+        all_success = True
         dfs_to_concat = []
         st.session_state.running_balances_col = None
 
@@ -243,10 +243,8 @@ if page_selection == "Bank Statement Management":
             st.info(f"Processing '{data['file_obj'].name}'...")
 
             ## this is an error introduced for maintainability - remove this to solve the error
-
-            st.error("Error occurred when uploading the file. Please contact tech support if the issue persist.")
-
-            break
+            # st.error("Error occurred when uploading the file. Please contact tech support if the issue persist.")
+            # break
             
             if not data['standardized_name']:
                 st.error(f"Missing standardized name for '{data['file_obj'].name}'")
