@@ -413,7 +413,7 @@ def reconcile_adjustment_row(
         bank_amt_raw = bank_row.get(amount_column)
         bank_amt = safe_float(bank_amt_raw)
 
-        if bank_amt is None:
+        if bank_amt is None or parsed_date.strftime('%Y-%m-%d') != bank_row['_ParsedDate'].strftime('%Y-%m-%d') or abs(bank_amt) < 0.01:
             continue
 
         if debug:
@@ -446,6 +446,9 @@ def reconcile_adjustment_row(
                 'Bank_Matched_Column': amount_column,
                 'Bank_Row_Index': idx
             })
+
+            # st.info(f"   ✅ Match found: Adjustment Amount {amount} on {parsed_date.strftime('%Y-%m-%d')} matched with Bank Amount {bank_amt} on {bank_row['_ParsedDate'].strftime('%Y-%m-%d')} in '{target_bank_df_key}' : bank key data {bank_record_key}")
+
             matched_bank_keys.add(bank_record_key)
             if debug:
                 st.success("✅ Match found and recorded!")
@@ -528,6 +531,8 @@ def identify_unmatched_bank_records(bank_dfs: dict, matched_bank_keys: set, unma
                     rounded_amt,
                     operation_for_key
                 )
+
+                # st.warning(f"Checking bank record key: {bank_record_key} in matched keys... { bank_record_key in matched_bank_keys} \n : matched key data list {matched_bank_keys}")
 
                 if bank_record_key in matched_bank_keys:
                     is_matched_in_any_way = True
