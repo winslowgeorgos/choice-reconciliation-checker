@@ -419,7 +419,7 @@ def reconcile_adjustment_row(
         if debug:
             st.info(f"  Comparing bank amount {bank_amt} (from column '{amount_column}') with adjustment amount {amount}")
 
-        if abs(bank_amt - amount) <= amount_tolerance:
+        if abs(abs(bank_amt) - abs(amount)) <= amount_tolerance:
             bank_record_key_operation = 'debit' if 'debit' in amount_column.lower() or bank_amt < 0 else 'credit'
             if 'credit' in amount_column.lower(): # Specific check for credit column
                 bank_record_key_operation = 'credit'
