@@ -9,6 +9,7 @@ import io
 from fx_reconcilliation_app_page import fx_reconciliation_app
 from fx_trade_reconciliation_page import graphed_analysis_app
 from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
+from business_fx_reconciliation_page import business_reconciliation_app   # NEW
 
 st.set_page_config(page_title="Finance(FX) Reconciliation Dashboard", layout="wide")
 
@@ -120,7 +121,7 @@ if 'bank_uploaded_file_objs' not in st.session_state: st.session_state.bank_uplo
 if 'raw_bank_data_previews' not in st.session_state: st.session_state.raw_bank_data_previews = {}
 if 'merged_bank_statement' not in st.session_state: st.session_state.merged_bank_statement = pd.DataFrame()
 if "cached_bank_files" not in st.session_state: st.session_state.cached_bank_files = {}
-page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Cross-Match Analysis"])
+page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Business FX Reconciliation", "Cross-Match Analysis"])
 
 # --- Main App Logic ---
 if page_selection == "Bank Statement Management":
@@ -360,6 +361,9 @@ elif page_selection == "FX Trade Reconciliation":
     st.title("FX Trade Reconciliation App")
     if not st.session_state.bank_dfs: st.warning("Please go to 'Bank Statement Management' to upload and process bank statements first.")
     else: (st.session_state.df_matched_counterparty, st.session_state.df_matched_choice, st.session_state.df_unmatched_counterparty, st.session_state.df_unmatched_choice, st.session_state.df_unmatched_bank_trade) = graphed_analysis_app(st.session_state.bank_dfs)
+elif page_selection == "Business FX Reconciliation":
+    st.title("Business FX Reconciliation App")
+    business_reconciliation_app()
 elif page_selection == "Cross-Match Analysis":
     st.title("Cross-Match Analysis")
     st.write("This section combines and compares the results from the two reconciliation applications to find potential missed matches.")
