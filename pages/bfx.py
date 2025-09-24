@@ -5,9 +5,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import datetime
 from fuzzywuzzy import fuzz, process
-import re
 import io
-from io import BytesIO
+
 import os
 import pickle
 
@@ -200,116 +199,6 @@ def amounts_match(a, b, pct_tolerance=0.001, abs_min=0.05):
 
     tol = max(abs_min, pct_tolerance * max(abs(b), 1.0))
     return abs(a - b) <= tol
-
-
-# utility to ensure the DataFrame has all target columns in order (creates empty cols if missing)
-def ensure_columns_and_order(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    out = df.copy()
-    for c in cols:
-        if c not in out.columns:
-            out[c] = ""
-    # reorder
-    out = out[[c for c in cols]]
-    return out
-
-def df_to_excel_bytes(df: pd.DataFrame, summary_df: pd.DataFrame | None = None) -> bytes:
-    """
-    Write the dataframe plus optional summary table into an Excel bytes buffer,
-    preserving the TARGET_COLUMNS order and appending the summary block below.
-    """
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # write main sheet
-        final_df_to_write = ensure_columns_and_order(df, TARGET_COLUMNS)
-        final_df_to_write.to_excel(writer, index=False, sheet_name="Final-business-with-match-status")
-        # append summary on same sheet (start row after content + 2)
-        if summary_df is not None:
-            startrow = len(final_df_to_write) + 2
-            # summary_df should be a small dataframe or Series -> write as frame
-            summary_df.to_excel(writer, index=False, sheet_name="Final-business-with-match-status", startrow=startrow)
-    return output.getvalue()
-
-# --- UI / Display helpers ---
-sns.set_theme(style="whitegrid", palette="viridis")
-plt.rcParams['figure.figsize'] = (10, 6)
-
-OUT_MATCHED_BUY = "MatchedBuy_business.csv"
-OUT_MATCHED_SELL = "MatchedSell_business.csv"
-OUT_UNMATCHED_BUY = "UnmatchedBuy_business.csv"
-OUT_UNMATCHED_SELL = "UnmatchedSell_business.csv"
-OUT_UNMATCHED_business = "Unmatchedbusiness.csv"
-
-# The column layout observed in your example final report (keeps the same order).
-TARGET_COLUMNS = [
-    "Created At",
-    "Reference number",
-    "Deal type",
-    "Client Name",
-    "Amount",
-    "Rate",
-    "KES equivalent",
-    "Collection bank",
-    "Payee bank",
-    "Client Account Number",
-    "Status",
-    "KES_Equivalent_Matched",
-    "Other_Currency_Matched",
-    "Mismatch_Type"
-]
-
-def build_summary_from_final(final_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build summary grouped by Deal type:
-      - Sum of Amount (non-empty)
-      - Sum of Adjusted KES equivalent (non-empty)
-
-    Adjustment:
-      If Status is "completed on <date>" AND Client Account Name contains a numeric value,
-      then subtract that numeric value from KES equivalent before summation.
-    """
-    df = final_df.copy()
-
-    # Ensure numeric (empty/blank -> NaN)
-    df["Amount_numeric"] = pd.to_numeric(df.get("Amount", ""), errors="coerce")
-    df["KES_numeric"] = pd.to_numeric(df.get("KES equivalent", ""), errors="coerce")
-
-    # Convert Client Account Name to numeric if possible
-    df["Client_numeric"] = pd.to_numeric(df.get("Client Account Number", ""), errors="coerce")
-
-    # --- Adjustment logic ---
-    cond = (
-        df["Status"].astype(str).str.lower().str.startswith("completed on")
-        & df["Client_numeric"].notna()
-    )
-
-    # Create Adjusted_KES tracker column
-    df["Adjusted_KES"] = df["KES_numeric"]
-
-    # Apply adjustment: subtract Client_numeric from KES_numeric
-    df.loc[cond, "Adjusted_KES"] = df.loc[cond, "KES_numeric"] - df.loc[cond, "Client_numeric"]
-
-    # Drop rows where both are NaN (nothing to contribute)
-    df = df.dropna(subset=["Amount_numeric", "Adjusted_KES"], how="all")
-
-    # Group by deal type using Adjusted_KES
-    summary = (
-        df.groupby("Deal type", dropna=False)
-        .agg(
-            Total_Amount=("Amount_numeric", "sum"),
-            Total_KES=("Adjusted_KES", "sum"),
-        )
-        .reset_index()
-    )
-
-    # Clean up numeric formatting
-    summary["Total_Amount"] = summary["Total_Amount"].round(2)
-    summary["Total_KES"] = summary["Total_KES"].round(2)
-
-    return summary  # return both summary and df with tracker column
-
-# Helper functions (keep these the same as in your original code)
-def df_to_csv_bytes(df):
-    return df.to_csv(index=False).encode("utf-8")
 
 
 # --- NEW: Updated Core Reconciliation with MatchedCounterParty and MatchedChoicePayment ---
@@ -587,8 +476,8 @@ def reconcile_fx_with_business_updated(
     }
 
 # --- Updated UI function ---
-def business_reconciliation_app(matched_counterparty, matched_choice, debug_mode):
-    # st.title("Business FX Reconciliation App")
+def business_reconciliation_app_updated():
+    st.title("Business FX Reconciliation App")
     
     # Check if bank statements are processed
     if not st.session_state.get('bank_dfs'):
@@ -596,24 +485,15 @@ def business_reconciliation_app(matched_counterparty, matched_choice, debug_mode
         return
     
     # Get the matched dataframes from session state
-    df_matched_counterparty = (
-        matched_counterparty 
-        if matched_counterparty is not None 
-        else st.session_state.get('df_matched_counterparty', pd.DataFrame())
-    )
-
-    df_matched_choice = (
-        matched_choice 
-        if matched_choice is not None 
-        else st.session_state.get('df_matched_choice', pd.DataFrame())
-    )
+    df_matched_counterparty = st.session_state.get('df_matched_counterparty', pd.DataFrame())
+    df_matched_choice = st.session_state.get('df_matched_choice', pd.DataFrame())
     
     if df_matched_counterparty.empty or df_matched_choice.empty:
         st.warning("Matched counterparty and choice payment data not available. Please process bank statements first.")
         return
 
     # Mode selection
-    mode = st.radio("Select Mode:", [ "Interactive Final Report Mode", "Standard Mode"], 
+    mode = st.radio("Select Mode:", ["Standard Mode", "Interactive Final Report Mode"], 
                    help="Standard Mode: Basic reconciliation with downloads. Interactive Mode: Edit final report with row management.")
     
     uploaded_business_file = st.file_uploader("Upload business FX Transactions (Excel)", type=["xlsx"], 
@@ -623,120 +503,15 @@ def business_reconciliation_app(matched_counterparty, matched_choice, debug_mode
         return
 
     try:
-        # Load Excel file
         business_df = pd.read_excel(uploaded_business_file, sheet_name=0)
-        st.success("Business FX Transactions file loaded successfully!")
-
-        # --- Data Cleaning & Preparation ---
-
-        # 1. Clean Amount column (drop null, empty, n/a, 0)
-        business_df['Amount'] = business_df['Amount'].replace(
-            ["", " ", "n/a", "N/A", None], pd.NA
-        )
-        business_df['Amount'] = pd.to_numeric(business_df['Amount'], errors='coerce')
-        business_df = business_df.dropna(subset=['Amount'])
-        business_df = business_df[business_df['Amount'] != 0]
-
-        # --- Clean Rate column ---
-        if 'Rate' in business_df.columns:
-            business_df['Rate'] = business_df['Rate'].replace(
-                ["", " ", "n/a", "N/A", None], pd.NA
-            )
-            business_df['Rate'] = pd.to_numeric(business_df['Rate'], errors='coerce')
-
-        # 2. Create completed_date column
-        date_col = "x" if "x" in business_df.columns else business_df.columns[0]
-
-        def extract_completed_date(row):
-            status = str(row.get("Status", ""))
-            match = re.search(r"completed on (\d{1,2}\.\d{1,2}\.\d{4})", status, re.IGNORECASE)
-            if match:
-                return pd.to_datetime(match.group(1), format="%d.%m.%Y", errors="coerce")
-            return row[date_col]
-
-        if "Status" in business_df.columns:
-            business_df["completed_date"] = business_df.apply(extract_completed_date, axis=1)
-            business_df["completed_date"] = pd.to_datetime(
-                business_df["completed_date"], errors="coerce"
-            )
-
-        # Ensure x column is datetime
-        if date_col in business_df.columns:
-            business_df[date_col] = pd.to_datetime(business_df[date_col], errors="coerce")
-
-        # 3. Add KES equivalent if columns exist
+        st.success("business FX Transactions file loaded successfully!")
+        
         if 'Amount' in business_df.columns and 'Rate' in business_df.columns:
             business_df['KES equivalent'] = business_df['Amount'] * business_df['Rate']
-
-        # --- Filtering by (x OR completed_date) ---
-        st.subheader("📅 Filter by Date Range (x OR completed_date)")
-
-        # Drop rows where both are NaT
-        df_with_dates = business_df.dropna(subset=[date_col, "completed_date"], how="all").copy()
-
-        if not df_with_dates.empty:
-            min_date = pd.concat([
-                df_with_dates[date_col].dropna(),
-                df_with_dates["completed_date"].dropna()
-            ]).min().date()
-
-            max_date = pd.concat([
-                df_with_dates[date_col].dropna(),
-                df_with_dates["completed_date"].dropna()
-            ]).max().date()
-
-            start_date = st.date_input("Start date", min_date, min_value=min_date, max_value=max_date)
-            end_date = st.date_input("End date", max_date, min_value=min_date, max_value=max_date)
-
-            if start_date > end_date:
-                st.warning("⚠️ Start date cannot be after End date")
-            else:
-                filtered_df = df_with_dates[
-                    ((df_with_dates[date_col].dt.date >= start_date) &
-                    (df_with_dates[date_col].dt.date <= end_date)) |
-                    ((df_with_dates["completed_date"].dt.date >= start_date) &
-                    (df_with_dates["completed_date"].dt.date <= end_date))
-                ]
-
-                st.write(
-                    f"Showing records where **x OR completed_date** "
-                    f"is between **{start_date}** and **{end_date}**"
-                )
-                st.dataframe(filtered_df)
-
-                # --- Download filtered results ---
-                st.subheader("⬇️ Download Filtered Data")
-
-                # CSV
-                csv = filtered_df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="Download as CSV",
-                    data=csv,
-                    file_name="filtered_fx_transactions.csv",
-                    mime="text/csv",
-                )
-
-                # Excel
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-                    filtered_df.to_excel(writer, index=False, sheet_name="Filtered Data")
-                st.download_button(
-                    label="Download as Excel",
-                    data=output.getvalue(),
-                    file_name="filtered_fx_transactions.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-                business_df = filtered_df
-        else:
-            st.info("No valid dates found in x or completed_date for filtering.")
-
+        st.dataframe(business_df.head())
     except Exception as e:
         st.error(f"Error loading business file: {e}")
         return
-
-
-
 
     debug = st.checkbox("Enable Debug Mode", value=False)
     tolerance = st.slider("Matching tolerance (percentage):", 0.01, 1.0, 0.1, step=0.01)
@@ -938,4 +713,4 @@ def business_reconciliation_app(matched_counterparty, matched_choice, debug_mode
 
 # Run the updated app
 if __name__ == "__main__":
-    business_reconciliation_app()
+    business_reconciliation_app_updated()
