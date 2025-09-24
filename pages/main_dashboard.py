@@ -363,7 +363,11 @@ elif page_selection == "FX Trade Reconciliation":
     else: (st.session_state.df_matched_counterparty, st.session_state.df_matched_choice, st.session_state.df_unmatched_counterparty, st.session_state.df_unmatched_choice, st.session_state.df_unmatched_bank_trade) = graphed_analysis_app(st.session_state.bank_dfs)
 elif page_selection == "Business FX Reconciliation":
     st.title("Business FX Reconciliation App")
-    business_reconciliation_app()
+    if not st.session_state.bank_dfs: st.warning("Please go to 'Bank Statement Management' to upload and process bank statements first.")
+    else:  business_reconciliation_app(
+        st.session_state.df_matched_counterparty, st.session_state.df_matched_choice, debug_mode=st.session_state.debug_mode
+    )
+    
 elif page_selection == "Cross-Match Analysis":
     st.title("Cross-Match Analysis")
     st.write("This section combines and compares the results from the two reconciliation applications to find potential missed matches.")
