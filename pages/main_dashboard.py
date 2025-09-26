@@ -364,9 +364,7 @@ elif page_selection == "FX Trade Reconciliation":
 elif page_selection == "Business FX Reconciliation":
     st.title("Business FX Reconciliation App")
     if not st.session_state.bank_dfs: st.warning("Please go to 'Bank Statement Management' to upload and process bank statements first.")
-    else:  business_reconciliation_app(
-        st.session_state.df_matched_counterparty, st.session_state.df_matched_choice, debug_mode=st.session_state.debug_mode
-    )
+    else:  business_reconciliation_app(st.session_state.df_matched_counterparty, st.session_state.df_matched_choice, debug_mode=st.session_state.debug_mode )
     
 elif page_selection == "Cross-Match Analysis":
     st.title("Cross-Match Analysis")

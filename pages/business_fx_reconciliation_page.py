@@ -615,18 +615,36 @@ def business_reconciliation_app(matched_counterparty, matched_choice, debug_mode
     # Mode selection
     mode = st.radio("Select Mode:", [ "Interactive Final Report Mode", "Standard Mode"], 
                    help="Standard Mode: Basic reconciliation with downloads. Interactive Mode: Edit final report with row management.")
-    
-    uploaded_business_file = st.file_uploader("Upload business FX Transactions (Excel)", type=["xlsx"], 
-                                         key="business_file_unified")
-    if not uploaded_business_file:
-        st.info("Upload the business file to continue.")
-        return
+
 
     try:
-        # Load Excel file
-        business_df = pd.read_excel(uploaded_business_file, sheet_name=0)
-        st.success("Business FX Transactions file loaded successfully!")
+        uploaded_business_file = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx", "xls"])
 
+        if uploaded_business_file is not None:
+            file_name = uploaded_business_file.name.lower()
+
+            try:
+                if file_name.endswith(".csv"):
+                    business_df = pd.read_csv(uploaded_business_file)
+                    st.success("CSV file loaded successfully!")
+
+                else:
+                    # Read all sheets first
+                    xls = pd.ExcelFile(uploaded_business_file)
+                    sheet_names = xls.sheet_names
+
+                    # If multiple sheets, let user choose
+                    sheet_choice = st.selectbox("Select a sheet to load", sheet_names)
+
+                    # Load selected sheet
+                    business_df = pd.read_excel(uploaded_business_file, sheet_name=sheet_choice)
+                    st.success(f"Excel file loaded successfully! (Sheet: {sheet_choice})")
+
+                # Show preview
+                st.write("### Preview of uploaded data", business_df.head())
+
+            except Exception as e:
+                st.error(f"Error loading business file: {e}")
         # --- Data Cleaning & Preparation ---
 
         # 1. Clean Amount column (drop null, empty, n/a, 0)
@@ -735,7 +753,9 @@ def business_reconciliation_app(matched_counterparty, matched_choice, debug_mode
         st.error(f"Error loading business file: {e}")
         return
 
-
+    if not uploaded_business_file:
+            st.info("Upload the business file to continue.")
+            return
 
 
     debug = st.checkbox("Enable Debug Mode", value=False)
