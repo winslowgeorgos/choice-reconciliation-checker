@@ -375,10 +375,11 @@ elif page_selection == "Cross-Match Analysis":
         if st.button("Perform Cross-Match Analysis"):
             with st.spinner("Performing cross-match analysis..."):
                 run_cross_match_analysis(
-                    st.session_state.df_matched_adjustments_local, st.session_state.df_matched_adjustments_foreign,
-                    st.session_state.df_unmatched_adjustments_local, st.session_state.df_unmatched_adjustments_foreign,
-                    st.session_state.df_matched_counterparty, st.session_state.df_matched_choice,
-                    st.session_state.df_unmatched_bank_records, st.session_state.df_unmatched_bank_trade,
+                    st.session_state.df_matched_adjustments_local,
+                      st.session_state.df_matched_adjustments_foreign,
+                    st.session_state.df_matched_counterparty,
+                      st.session_state.df_matched_choice,
+                    st.session_state.bank_dfs,
                     debug_mode=st.session_state.debug_mode
                 )
         else: st.info("Click the button above to run the cross-match analysis.")
