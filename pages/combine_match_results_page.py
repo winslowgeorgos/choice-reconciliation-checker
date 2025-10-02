@@ -601,46 +601,46 @@ def cross_match_analysis_app():
         st.info("No bank records to display.")
 
     st.markdown("---")
-    st.subheader("Newly Found Matches (Previously Unmatched Bank Records)")
+    st.subheader("Crossed Matches Found")
     if not newly_matched_unmatched_bank_records_df.empty:
         st.write("These bank records were found to have matches in other reconciliation apps during cross-analysis.")
         st.dataframe(newly_matched_unmatched_bank_records_df)
         st.download_button(
-            label="Download Newly Matched Bank Records",
+            label="Download Matched Bank Records",
             data=newly_matched_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Newly_Matched_Bank_Records.csv",
+            file_name="cross_Matched_Bank_Records.csv",
             mime="text/csv"
         )
     else:
         st.info("No new matches were found during cross-analysis.")
 
     st.markdown("---")
-    st.subheader("Still Unmatched Bank Records (After Cross-Match)")
+    st.subheader("Cross Unmatched Bank Records (After Cross-Match)")
     if not still_unmatched_bank_records_df.empty:
         st.write("These records remain unmatched even after cross-match analysis against all matched data.")
         st.dataframe(still_unmatched_bank_records_df)
         st.download_button(
-            label="Download All Still Unmatched Bank Records",
+            label="Download All Unmatched Bank Records",
             data=still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Still_Unmatched_Bank_Records.csv",
+            file_name="cross_Unmatched_Bank_Records.csv",
             mime="text/csv"
         )
     else:
         st.success("All bank records were matched during cross-analysis.")
 
     st.markdown("---")
-    st.subheader("Unique Still Unmatched Bank Records")
-    if not unique_still_unmatched_bank_records_df.empty:
-        st.write("This table shows a de-duplicated view of the 'Still Unmatched Bank Records'.")
-        st.dataframe(unique_still_unmatched_bank_records_df)
-        st.download_button(
-            label="Download Unique Still Unmatched Bank Records",
-            data=unique_still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
-            file_name="Unique_Still_Unmatched_Bank_Records.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("No unique unmatched bank records to display.")
+    # st.subheader("Unique Still Unmatched Bank Records")
+    # if not unique_still_unmatched_bank_records_df.empty:
+    #     st.write("This table shows a de-duplicated view of the 'Still Unmatched Bank Records'.")
+    #     st.dataframe(unique_still_unmatched_bank_records_df)
+    #     st.download_button(
+    #         label="Download Unique Still Unmatched Bank Records",
+    #         data=unique_still_unmatched_bank_records_df.to_csv(index=False).encode('utf-8'),
+    #         file_name="Unique_Still_Unmatched_Bank_Records.csv",
+    #         mime="text/csv"
+    #     )
+    # else:
+    #     st.info("No unique unmatched bank records to display.")
 
 if __name__ == '__main__':
     st.title("Cross-Match Analysis App")
