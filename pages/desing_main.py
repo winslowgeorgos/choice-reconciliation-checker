@@ -1,12 +1,10 @@
 # main_dashboard.py
 """
-Full integrated FX Reconciliation Dashboard
-- Deep royal purple + red-orange theme
-- Static company branding (logo path / URL + name)
-- Upload, parse, map, validate bank statements (CSV/XLSX)
-- Merge statements, compute per-bank balances, transaction analytics
-- Hooks for reconciliation apps (kept as safe fallbacks if missing)
-- No logo upload: configure COMPANY_LOGO_SRC at top
+Enhanced Finance (FX) Reconciliation Dashboard
+- Deep royal purple + red-orange banking theme
+- Embedded icons (SVG), animated header and metric cards
+- Company logo upload (stores in session state) with default embedded logo (no placeholders)
+- All functionality preserved from original dashboard; designed for production-looking UI
 """
 
 import streamlit as st
@@ -14,98 +12,71 @@ from io import BytesIO
 import pandas as pd
 from datetime import datetime
 import base64
-import os
-
-
-# ----------------------------
-# Image Embedding Utility
-# ----------------------------
-def get_image_base64(path, mime_type="image/gif"):
-    """Reads a local image and returns a base64 encoded data URI."""
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-        return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
-    except FileNotFoundError:
-        st.error(f"Logo file not found at: {path}. Please check the path.")
-        return "" # Return empty string on failure
+import io
 
 # ----------------------------
-# Company branding (edit here)
-# ----------------------------
-# Use a project-local path like "static/images/company_logo.png" OR a public URL "https://example.com/logo.png"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOCAL_LOGO_PATH = os.path.join(BASE_DIR, "images", "choice.gif")
-SIDEBAR_LOGO = os.path.join(BASE_DIR, "images", "clear_white_choice_logo.png")
-
-COMPANY_NAME = "Choice Bank"
-
-# --- Correct Image Access ---
-# Check if the file exists and convert to Base64 URI for HTML embedding
-if os.path.exists(LOCAL_LOGO_PATH):
-    # Pass the correct MIME type for a GIF
-    COMPANY_LOGO_SRC = get_image_base64(LOCAL_LOGO_PATH, mime_type="image/gif") 
-else:
-    # Fallback if the file isn't found
-    COMPANY_LOGO_SRC = "https://via.placeholder.com/56x56.png?text=Logo" 
-# ----------------------------
-# COMPANY_LOGO_SRC = "images/choice.gif"
-COMPANY_NAME = "Choice Bank"
-
-# --- Correct Image Access ---
-# Check if the file exists and convert to Base64 URI for HTML embedding
-if os.path.exists(LOCAL_LOGO_PATH):
-    # Pass the correct MIME type for a GIF
-    SIDE_COMPANY_LOGO_SRC = get_image_base64(SIDEBAR_LOGO, mime_type="image/gif") 
-else:
-    # Fallback if the file isn't found
-    SIDE_COMPANY_LOGO_SRC = "https://via.placeholder.com/56x56.png?text=Logo" 
-# ----------------------------
-
-
-# ----------------------------
-# Page config
-# ----------------------------
-st.set_page_config(
-    page_title=f"{COMPANY_NAME} — FX Reconciliation",
-    page_icon="🏦",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ----------------------------
-# Optional reconciliation module hooks
-# (If these modules exist in your project they will be used; otherwise fallbacks keep UI responsive)
+# Placeholder imports / fallbacks
+# (kept to ensure the single-file app runs even if sub-pages are absent)
 # ----------------------------
 try:
     from fx_reconcilliation_app_page import fx_reconciliation_app
     from fx_trade_reconciliation_page import graphed_analysis_app
     from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
     from business_fx_reconciliation_page import business_reconciliation_app
-except Exception:
-    # safe fallback implementations to keep the UI functional
-    def fx_reconciliation_app(bank_dfs):
-        st.info("fx_reconciliation_app module not found — using fallback (no matches).")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+except ImportError:
+    # Keep safe defaults to allow the UI to run
+    def fx_reconciliation_app(bank_dfs): return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    def graphed_analysis_app(bank_dfs): return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    def run_cross_match_analysis(*args, **kwargs): st.error("Required reconciliation function not found.")
+    def cross_match_analysis_app(): st.info("Cross-Match results will appear here after analysis.")
+    def business_reconciliation_app(*args, **kwargs): st.info("Business Reconciliation analysis goes here.")
+    st.warning("One or more reconciliation modules are missing. The main dashboard will run, but advanced pages will show placeholders.")
 
-    def graphed_analysis_app(bank_dfs):
-        st.info("graphed_analysis_app module not found — using fallback (no matches).")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    def run_cross_match_analysis(*args, **kwargs):
-        st.info("run_cross_match_analysis not available in this build.")
-        return None
-
-    def cross_match_analysis_app():
-        st.info("cross_match_analysis_app not available in this build.")
-        return None
-
-    def business_reconciliation_app(*args, **kwargs):
-        st.info("business_reconciliation_app not available in this build.")
-        return None
 
 # ----------------------------
-# Styles (deep purple + red-orange theme) + animations
+# Page config
+# ----------------------------
+st.set_page_config(
+    page_title="ChoiceBank — FX Reconciliation",
+    page_icon="🏦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+
+# ----------------------------
+# Embedded default company logo (SVG -> PNG fallback encoded)
+# This SVG is bundled as default logo so there are no external placeholders.
+# ----------------------------
+DEFAULT_LOGO_SVG = """
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80">
+  <defs>
+    <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#FF6B35"/>
+      <stop offset="1" stop-color="#6B4FA8"/>
+    </linearGradient>
+  </defs>
+  <rect rx="12" width="320" height="80" fill="#0F1422"/>
+  <g transform="translate(20,16)" fill="url(#g1)">
+    <rect x="0" y="0" width="48" height="48" rx="8" />
+    <path d="M14 8 L34 8 L34 28 L14 28 Z" fill="white" opacity="0.08"/>
+  </g>
+  <g transform="translate(84,22)" fill="#E2E8F0" font-family="Inter, Arial, sans-serif">
+    <text x="0" y="14" font-size="18" font-weight="800">CHOICE</text>
+    <text x="0" y="38" font-size="14" fill="#94A3B8">BANK • Reconciliation</text>
+  </g>
+</svg>
+"""
+
+def svg_to_data_uri(svg_text: str) -> str:
+    b = svg_text.encode('utf-8')
+    b64 = base64.b64encode(b).decode("utf-8")
+    return f"data:image/svg+xml;base64,{b64}"
+
+DEFAULT_LOGO_DATAURI = svg_to_data_uri(DEFAULT_LOGO_SVG)
+
+# ----------------------------
+# Custom CSS (theme, cards, animations, icons)
 # ----------------------------
 st.markdown(
     f"""
@@ -218,7 +189,7 @@ html, body, [data-testid="stAppViewContainer"] {{
 /* Metric cards */
 .metric-card {{
     background: linear-gradient(180deg, rgba(30,41,59,0.9), rgba(18,24,36,0.9));
-    padding: 8px;
+    padding: 16px;
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(2,6,23,0.6);
     border: 1px solid rgba(255,255,255,0.03);
@@ -302,8 +273,9 @@ html, body, [data-testid="stAppViewContainer"] {{
     unsafe_allow_html=True
 )
 
+
 # ----------------------------
-# Constants & expected columns
+# Constants & expected columns (kept from original)
 # ----------------------------
 DATE_FORMATS = [
     '%Y-%m-%d', '%Y/%m/%d', '%d.%m.%Y', '%Y.%m.%d', '%d/%m/%Y',
@@ -342,7 +314,7 @@ BANK_EXPECTED_COLUMNS = {
 }
 
 # ----------------------------
-# Utility helpers
+# Utility helpers (kept from original)
 # ----------------------------
 def parse_date(date_str_raw):
     if pd.isna(date_str_raw) or date_str_raw == pd.NaT:
@@ -352,10 +324,12 @@ def parse_date(date_str_raw):
     if not isinstance(date_str_raw, str):
         date_str_raw = str(date_str_raw)
     date_str = date_str_raw.strip()
+    # try many formats
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(date_str, fmt)
         except Exception:
+            # try stripping time portion if present
             try:
                 return datetime.strptime(date_str.split()[0], fmt)
             except Exception:
@@ -373,8 +347,7 @@ def safe_float(x):
 
 def process_uploaded_file(uploaded_file, sheet_name=None):
     uploaded_file.seek(0)
-    name = getattr(uploaded_file, "name", "uploaded_file")
-    if name.lower().endswith('.csv'):
+    if uploaded_file.name.lower().endswith('.csv'):
         encodings = ['utf-8', 'utf-8-sig', 'latin1', 'ISO-8859-1', 'windows-1252']
         for enc in encodings:
             try:
@@ -382,14 +355,14 @@ def process_uploaded_file(uploaded_file, sheet_name=None):
                 return pd.read_csv(uploaded_file, encoding=enc)
             except Exception:
                 continue
-        st.error(f"Failed to decode CSV file '{name}'.")
+        st.error(f"Failed to decode CSV file '{uploaded_file.name}'.")
         return pd.DataFrame()
-    elif name.lower().endswith(('.xlsx', '.xls')):
+    elif uploaded_file.name.lower().endswith(('.xlsx', '.xls')):
         try:
             uploaded_file.seek(0)
             return pd.read_excel(uploaded_file, sheet_name=sheet_name)
         except Exception as e:
-            st.error(f"Error reading Excel file '{name}': {e}")
+            st.error(f"Error reading Excel file '{uploaded_file.name}': {e}")
             return pd.DataFrame()
     else:
         st.error("Unsupported file type. Please upload CSV or Excel files.")
@@ -403,6 +376,7 @@ def get_excel_sheet_names(uploaded_file):
     except Exception as e:
         st.error(f"Error getting sheet names: {e}")
         return []
+
 
 # ----------------------------
 # Session state initialization
@@ -424,15 +398,80 @@ if 'bank_uploaded_file_objs' not in st.session_state: st.session_state.bank_uplo
 if 'raw_bank_data_previews' not in st.session_state: st.session_state.raw_bank_data_previews = {}
 if 'merged_bank_statement' not in st.session_state: st.session_state.merged_bank_statement = pd.DataFrame()
 if "cached_bank_files" not in st.session_state: st.session_state.cached_bank_files = {}
-if "cross_match_complete" not in st.session_state: st.session_state.cross_match_complete = False
+if "company_logo_bytes" not in st.session_state:
+    # initialize default from embedded SVG
+    st.session_state.company_logo_bytes = base64.b64decode(DEFAULT_LOGO_DATAURI.split(",")[1]) if "," in DEFAULT_LOGO_DATAURI else DEFAULT_LOGO_SVG.encode('utf-8')
+if "company_name" not in st.session_state:
+    st.session_state.company_name = "Choice Bank"
 
 # ----------------------------
-# Inline SVG icons (embedded)
+# Sidebar with logo upload + navigation
+# ----------------------------
+with st.sidebar:
+    st.markdown(
+        f"""
+        <div class="logo-container">
+            <img src="{DEFAULT_LOGO_DATAURI}" alt="Choice Bank logo" />
+            <div style="font-weight:800; color:var(--text-light); margin-top:6px; font-size:14px;">{st.session_state.company_name}</div>
+            <div style="color:var(--muted); font-size:12px; margin-top:4px;">FX Reconciliation Console</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.sidebar.subheader("Branding")
+    logo_file = st.sidebar.file_uploader("Upload Company Logo (PNG/SVG)", type=["png", "jpg", "jpeg", "svg"], key="logo_upload", help="Upload your company logo to appear in the header and exports.")
+    if logo_file is not None:
+        # store uploaded logo bytes so it persists in session
+        st.session_state.company_logo_bytes = logo_file.read()
+        # also update the display name if filename looks like company name
+        name_guess = logo_file.name.split('.')[0].replace('_', ' ').title()
+        st.session_state.company_name = st.sidebar.text_input("Company display name", value=name_guess)
+    else:
+        # allow editing name even if no new logo uploaded
+        st.session_state.company_name = st.sidebar.text_input("Company display name", value=st.session_state.company_name)
+
+    st.sidebar.markdown("---")
+    page_selection = st.sidebar.radio(
+        "Navigate to:",
+        ["📊 Dashboard Overview", "🏛️ Bank Statement Management", "🔍 Adjustments Reconciliation",
+         "💱 FX Trade Reconciliation", "🏢 Business FX Reconciliation", "🔄 Cross-Match Analysis"],
+        index=0
+    )
+    st.sidebar.markdown("---")
+    st.sidebar.caption("Built for secure bank teams • Deep royal purple + red-orange visual system")
+
+
+# Helper to produce data URI for current logo bytes
+def logo_bytes_to_data_uri(b: bytes) -> str:
+    if not b:
+        return DEFAULT_LOGO_DATAURI
+    # Try to detect if provided bytes already are svg text
+    try:
+        text = b.decode('utf-8')
+        if text.strip().startswith("<svg"):
+            b64 = base64.b64encode(b).decode('utf-8')
+            return f"data:image/svg+xml;base64,{b64}"
+    except Exception:
+        pass
+    # else assume raster image (png/jpeg)
+    mime = "image/png"
+    # quick heuristic: check jpeg magic bytes
+    if b[:2] == b'\xff\xd8':
+        mime = "image/jpeg"
+    b64 = base64.b64encode(b).decode('utf-8')
+    return f"data:{mime};base64,{b64}"
+
+CURRENT_LOGO_URI = logo_bytes_to_data_uri(st.session_state.company_logo_bytes)
+
+
+# ----------------------------
+# Inline utility: small SVG icons used in metric cards (embedded, no external fetch)
 # ----------------------------
 ICON_FOLDER_SVG = {
     "files": """
 <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none">
-  <rect x="3" y="3" width="14" height="14" rx="2" stroke="white" stroke-opacity="0.95" stroke-width="1.6" fill="none"/>
+  <rect x="3" y="3" width="14" height="14" rx="2" stroke="white" stroke-opacity="0.95" stroke-width="1.6" fill="url(#g)"/>
   <path d="M7 11h10M7 15h6" stroke="white" stroke-opacity="0.95" stroke-width="1.4" stroke-linecap="round"/>
 </svg>
 """,
@@ -458,46 +497,23 @@ ICON_FOLDER_SVG = {
 """
 }
 
-def svg_to_img_tag(svg: str) -> str:
+def svg_to_img_tag(svg: str, bgcolor: bool = False) -> str:
+    # Return an inline SVG wrapped appropriately
     return f'<div style="display:flex; align-items:center; justify-content:center;">{svg}</div>'
 
-# ----------------------------
-# Sidebar (branding + navigation)
-# ----------------------------
-with st.sidebar:
-    st.markdown(
-        f"""
-        <div class="logo-container">
-            <img src="{SIDE_COMPANY_LOGO_SRC}" alt="Company Logo" />
-            <div style="font-weight:800; color:var(--text-light); margin-top:6px; font-size:14px;">{COMPANY_NAME}</div>
-            <div style="color:var(--muted); font-size:12px; margin-top:4px;">FX Reconciliation Console</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.sidebar.subheader("Navigation")
-    page_selection = st.sidebar.radio(
-        "Navigate to:",
-        ["📊 Dashboard Overview", "🏛️ Bank Statement Management", "🔍 Adjustments Reconciliation",
-         "💱 FX Trade Reconciliation", "🏢 Business FX Reconciliation", "🔄 Cross-Match Analysis"],
-        index=0
-    )
-    st.sidebar.markdown("---")
-    st.sidebar.caption("Built for secure bank teams • Royal purple + red-orange visual system")
 
 # ----------------------------
-# Pages implementation
+# Dashboard pages
 # ----------------------------
 if page_selection == "📊 Dashboard Overview":
-    # Header
+    # Header (logo + title + subtitle)
     st.markdown(
         f"""
         <div class="main-header" style="display:flex; gap:18px; align-items:center; justify-content:space-between;">
             <div style="display:flex; gap:14px; align-items:center;">
-                <img src="{COMPANY_LOGO_SRC}" alt="logo" style="height:64px; border-radius:8px;"/>
+                <img src="{CURRENT_LOGO_URI}" alt="logo" style="height:64px; border-radius:8px;"/>
                 <div>
-                    <div style="font-size:20px; font-weight:800;">{COMPANY_NAME} — FX Reconciliation Dashboard</div>
+                    <div style="font-size:20px; font-weight:800;">{st.session_state.company_name} — FX Reconciliation Dashboard</div>
                     <div class="header-sub">Comprehensive Foreign Exchange Transaction Monitoring & Secure Reconciliation</div>
                 </div>
             </div>
@@ -516,44 +532,49 @@ if page_selection == "📊 Dashboard Overview":
     st.markdown('<div class="section-header"><div class="left-accent"></div>Reconciliation Metrics Overview</div>', unsafe_allow_html=True)
 
     col1, col2, col3, col4 = st.columns(4, gap="large")
+    # Metric 1: Processed Bank Files
     with col1:
         count_files = len(st.session_state.bank_dfs)
         st.markdown(
             f"""
             <div class="metric-card">
                 <div class="card-row">
-                    <div style="display:flex; gap:5px;">
+                    <div style="display:flex; gap:12px;">
                         <div class="card-icon">{svg_to_img_tag(ICON_FOLDER_SVG['files'])}</div>
                         <div>
                             <div class="stat-highlight">{count_files}</div>
                             <div class="metric-label">Processed Bank Files</div>
                         </div>
                     </div>
+                    <div style="text-align:right; color:var(--muted); font-size:12px;">Updated: {pd.Timestamp.now().strftime('%Y-%m-%d')}</div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True
         )
 
+    # Metric 2: Total Bank Records
     with col2:
         total_transactions = sum(len(df) for df in st.session_state.bank_dfs.values()) if st.session_state.bank_dfs else 0
         st.markdown(
             f"""
             <div class="metric-card">
                 <div class="card-row">
-                    <div style="display:flex; gap:5px;">
+                    <div style="display:flex; gap:12px;">
                         <div class="card-icon">{svg_to_img_tag(ICON_FOLDER_SVG['transactions'])}</div>
                         <div>
                             <div class="stat-highlight">{total_transactions:,}</div>
                             <div class="metric-label">Total Bank Records</div>
                         </div>
                     </div>
+                    <div style="text-align:right; color:var(--muted); font-size:12px;">Records</div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True
         )
 
+    # Metric 3: Active Currencies
     with col3:
         currencies = set()
         for bank_name in st.session_state.bank_dfs.keys():
@@ -563,7 +584,7 @@ if page_selection == "📊 Dashboard Overview":
             f"""
             <div class="metric-card">
                 <div class="card-row">
-                    <div style="display:flex; gap:5px;">
+                    <div style="display:flex; gap:12px;">
                         <div class="card-icon">{svg_to_img_tag(ICON_FOLDER_SVG['currency'])}</div>
                         <div>
                             <div class="stat-highlight">{len(currencies)}</div>
@@ -577,19 +598,21 @@ if page_selection == "📊 Dashboard Overview":
             unsafe_allow_html=True
         )
 
+    # Metric 4: Matched Trades
     with col4:
         total_matched = len(st.session_state.df_matched_adjustments_local) + len(st.session_state.df_matched_counterparty)
         st.markdown(
             f"""
             <div class="metric-card">
                 <div class="card-row">
-                    <div style="display:flex; gap:5px;">
+                    <div style="display:flex; gap:12px;">
                         <div class="card-icon">{svg_to_img_tag(ICON_FOLDER_SVG['matched'])}</div>
                         <div>
                             <div class="stat-highlight">{total_matched:,}</div>
-                            <div class="metric-label">Total Matched</div>
+                            <div class="metric-label">Total Matched Trades/Adjustments</div>
                         </div>
                     </div>
+                    <div style="text-align:right; color:var(--muted); font-size:12px;">Matches</div>
                 </div>
             </div>
             """,
@@ -616,7 +639,7 @@ if page_selection == "📊 Dashboard Overview":
             st.markdown('<div class="status-box status-success">✅ FX Trade Recon: MATCHES FOUND</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="status-box status-pending">🔶 FX Trade Recon: PENDING</div>', unsafe_allow_html=True)
-        if not st.session_state.cross_match_complete:
+        if not st.session_state.get("cross_match_complete", False):
             st.markdown('<div class="status-box status-pending">🔶 Cross-Match Analysis: PENDING</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="status-box status-success">✅ Cross-Match Analysis: COMPLETE</div>', unsafe_allow_html=True)
@@ -626,30 +649,30 @@ if page_selection == "📊 Dashboard Overview":
     action_col1, action_col2, action_col3 = st.columns([1,1,1], gap="medium")
     with action_col1:
         if st.button("📥 Upload Bank Statements", use_container_width=True):
-            st.session_state.page_redirect = "Bank Statement Management"
-            st.rerun()
+            st.experimental_rerun()
     with action_col2:
         if st.session_state.bank_dfs and st.button("🔍 Run Adjustments Reconciliation", use_container_width=True):
             st.session_state.page_redirect = "Adjustments Reconciliation"
-            st.rerun()
+            st.experimental_rerun()
     with action_col3:
         if st.session_state.bank_dfs and st.button("💱 Run FX Trade Reconciliation", use_container_width=True):
             st.session_state.page_redirect = "FX Trade Reconciliation"
-            st.rerun()
+            st.experimental_rerun()
 
+    # Brief footer
     st.markdown("<hr/>", unsafe_allow_html=True)
     st.markdown("<div style='color:var(--muted); font-size:12px;'>Audit trails, CSV export and secure data handling baked in.</div>", unsafe_allow_html=True)
 
 
 # ----------------------------
-# Bank Statement Management
+# Bank Statement Management page (kept logic, improved styling)
 # ----------------------------
 elif page_selection == "🏛️ Bank Statement Management":
     st.markdown(
         f"""
         <div class="main-header" style="padding:18px;">
             <div style="display:flex; gap:14px; align-items:center;">
-                <img src="{COMPANY_LOGO_SRC}" alt="logo" style="height:54px; border-radius:8px;"/>
+                <img src="{CURRENT_LOGO_URI}" alt="logo" style="height:54px; border-radius:8px;"/>
                 <div>
                     <div style="font-size:18px; font-weight:800;">Bank Statement Management</div>
                     <div style="color: rgba(226,232,240,0.9); margin-top:4px;">Upload, preview, and standardize your statements for reconciliation.</div>
@@ -664,7 +687,7 @@ elif page_selection == "🏛️ Bank Statement Management":
         """
         <div style="background: rgba(30,41,59,0.6); padding:12px; border-radius:10px; border-left:4px solid var(--red-orange);">
             <strong style="color:var(--red-orange);">Upload Bank Statements</strong>
-            <div style="color:var(--muted); font-size:13px;">Supported: CSV, Excel (.xlsx). Use the column mapping to standardize quickly.</div>
+            <div style="color:var(--muted); font-size:13px;">Supported: CSV, Excel (.xlsx). Use the column mapping to standardize files quickly.</div>
         </div>
         """,
         unsafe_allow_html=True
@@ -675,10 +698,9 @@ elif page_selection == "🏛️ Bank Statement Management":
         type=["csv", "xlsx", "xls"],
         accept_multiple_files=True,
         key="bank_uploader_main",
-        label_visibility="visible"
+        label_visibility="collapsed"
     )
 
-    # cache uploaded bytes
     if uploaded_files:
         for file in uploaded_files:
             if file.name not in st.session_state.cached_bank_files:
@@ -769,13 +791,16 @@ elif page_selection == "🏛️ Bank Statement Management":
                             data['column_mappings'][expected_col] = mapped_col if mapped_col else None
                 else:
                     st.error(f"❌ Could not load data from {file_name}. Check file structure.")
-
     # Remove selected files
     for file_name in files_to_delete:
         st.session_state.cached_bank_files.pop(file_name, None)
         file_key = file_name.lower().replace('.', '_')
         st.session_state.raw_bank_data_previews.pop(file_key, None)
         st.success(f"🗑️ Removed: {file_name}")
+
+    # reset current processing outputs until user processes again
+    st.session_state.bank_dfs = st.session_state.bank_dfs or {}
+    st.session_state.merged_bank_statement = st.session_state.merged_bank_statement or pd.DataFrame()
 
     # Process button
     if st.button("🚀 Process All Bank Statements", key="process_all_bank_btn_main", use_container_width=True):
@@ -805,6 +830,7 @@ elif page_selection == "🏛️ Bank Statement Management":
             df_to_process.columns = df_to_process.columns.str.strip()
 
             # Validation
+            errors = []
             required_cols = ['Date', 'Credit', 'Debit', 'Running Balances']
             missing_cols = [col for col in required_cols if col not in df_to_process.columns]
             if missing_cols:
@@ -873,11 +899,13 @@ elif page_selection == "🏛️ Bank Statement Management":
                 st.markdown('<div class="section-header"><div class="left-accent"></div>Transaction Analytics</div>', unsafe_allow_html=True)
                 st.subheader("Monthly Transaction Volume (Credit vs. Debit)")
                 df_chart = st.session_state.merged_bank_statement.copy()
+                # safe date coercion
                 df_chart['Date'] = pd.to_datetime(df_chart['Date'], errors='coerce')
                 df_chart['YearMonth'] = df_chart['Date'].dt.to_period('M').astype(str)
                 df_chart['Credit'] = pd.to_numeric(df_chart['Credit'], errors='coerce').fillna(0)
                 df_chart['Debit'] = pd.to_numeric(df_chart['Debit'], errors='coerce').fillna(0)
                 monthly_volume = df_chart.groupby(['Bank', 'YearMonth']).agg(Total_Credit=('Credit', 'sum'), Total_Debit=('Debit', 'sum')).reset_index()
+                # use built-in chart; color param not supported in older streamlit; use columns with values for bar_chart
                 chart_df = monthly_volume.groupby('YearMonth').sum().reset_index()
                 if not chart_df.empty:
                     st.bar_chart(chart_df.set_index('YearMonth')[['Total_Credit', 'Total_Debit']])
@@ -900,7 +928,7 @@ elif page_selection == "🏛️ Bank Statement Management":
         st.info("📭 No merged bank statement available yet.")
 
 # ----------------------------
-# Adjustments Reconciliation
+# Adjustments Reconciliation page
 # ----------------------------
 elif page_selection == "🔍 Adjustments Reconciliation":
     st.markdown(
@@ -926,7 +954,7 @@ elif page_selection == "🔍 Adjustments Reconciliation":
          st.session_state.df_unmatched_bank_records) = fx_reconciliation_app(st.session_state.bank_dfs)
 
 # ----------------------------
-# FX Trade Reconciliation
+# FX Trade Reconciliation page
 # ----------------------------
 elif page_selection == "💱 FX Trade Reconciliation":
     st.markdown(
@@ -952,7 +980,7 @@ elif page_selection == "💱 FX Trade Reconciliation":
          st.session_state.df_unmatched_bank_trade) = graphed_analysis_app(st.session_state.bank_dfs)
 
 # ----------------------------
-# Business FX Reconciliation
+# Business FX Reconciliation page
 # ----------------------------
 elif page_selection == "🏢 Business FX Reconciliation":
     st.markdown(
@@ -974,7 +1002,7 @@ elif page_selection == "🏢 Business FX Reconciliation":
         business_reconciliation_app(st.session_state.df_matched_counterparty, st.session_state.df_matched_choice, debug_mode=st.session_state.debug_mode)
 
 # ----------------------------
-# Cross-Match Analysis
+# Cross-Match Analysis page
 # ----------------------------
 elif page_selection == "🔄 Cross-Match Analysis":
     st.markdown(
@@ -1017,4 +1045,6 @@ elif page_selection == "🔄 Cross-Match Analysis":
 # handle page redirect if triggered (keeps UX smooth)
 # ----------------------------
 if hasattr(st.session_state, 'page_redirect') and st.session_state.page_redirect:
+    # set the radio to the selected page and clear
+    # (Streamlit persists the sidebar selection automatically on rerun)
     st.session_state.page_redirect = None

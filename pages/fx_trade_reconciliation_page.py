@@ -300,7 +300,9 @@ def process_fx_match(
     bank_currency_info_field: str,
     date_tolerance_days: int = 3,
     debug_mode: bool = False
-) -> tuple or None: # Returns (bank_key, bank_row_idx) on match, else None
+) -> list or None:
+    """Matches one FX trade against all potential bank statement records (can be multiple)."""
+
     amount = safe_float(fx_row.get(fx_amount_field))
     if amount is None or action_type not in ['Bank Buy', 'Bank Sell']:
         if debug_mode:
@@ -308,32 +310,24 @@ def process_fx_match(
         return None
 
     parsed_date = fx_row.get('Created At')
-    if parsed_date:
-        # Ensure parsed_date from FX trade df is a datetime object
-        if not isinstance(parsed_date, datetime):
-            parsed_date = parse_date(str(parsed_date)) # Use helper to parse if it's a string
-
+    if parsed_date and not isinstance(parsed_date, datetime):
+        parsed_date = parse_date(str(parsed_date))
     if not isinstance(parsed_date, datetime):
         if debug_mode:
             st.error(f"DEBUG: Skipping FX row due to unparseable 'Created At' date: {fx_row.get('Created At')}.")
         return None
 
     counterparty_raw = str(fx_row.get(bank_currency_info_field, '')).strip()
-    print("row data : ", fx_row)
     parts = counterparty_raw.split('-')
     if len(parts) < 2:
-        if debug_mode:
-            st.error(f"DEBUG: Skipping FX row due to insufficient parts in '{bank_currency_info_field}': {counterparty_raw}. Expected 'BankName-Currency'.")
         unmatched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
             'Bank Table (Expected)': f"N/A ({counterparty_raw})",
             'Action Type': action_type,
             'Amount': amount,
             'Vendor ID': fx_row.get('Vendor ID'),
-            'Vendor Name' : fx_row.get('Vendor Name'),
-            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
-            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
-            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
+            'Vendor Name': fx_row.get('Vendor Name'),
+            'Counterparty Dealer': fx_row.get('Counterparty Dealer'),
             'Status': 'Invalid Bank/Currency Info in FX Trade',
             'Source Column': bank_currency_info_field
         })
@@ -341,177 +335,121 @@ def process_fx_match(
 
     trade_bank_name_raw = parts[0].strip()
     trade_currency = parts[1].strip().upper()
+    normalized_trade_bank_name = normalize_bank_key(trade_bank_name_raw, debug_mode)
+    expected_bank_key = f"{normalized_trade_bank_name} {trade_currency}"
 
-    # Normalize FX trade bank name using the existing normalize_bank_key
-    normalized_trade_bank_name = normalize_bank_key(trade_bank_name_raw, debug_mode) # Removed .lower()
-    
-    if debug_mode:
-        st.info(f"DEBUG: Processing FX Trade - Date: {parsed_date.strftime('%Y-%m-%d')}, Type: {action_type}, Amount: {amount}, Trade Currency: {trade_currency}, Normalized Trade Bank Name: {normalized_trade_bank_name}")
-        st.info(f"DEBUG: Available Bank Statement Keys: {list(all_bank_dfs.keys())}")
-
-
-    found_match = False
-    target_bank_df_key = None
-    best_bank_name_match_ratio = 0
-    potential_bank_df_key = None
-
-    # Now, with user-selected bank statement keys, we prioritize exact matches first
-    # The `bank_df_key_in_dict` will now be the exact 'bankname currency' string from the dropdown.
-    expected_bank_key_from_fx_trade = f"{normalized_trade_bank_name} {trade_currency}" # Removed .lower()
-
-    if expected_bank_key_from_fx_trade in all_bank_dfs:
-        target_bank_df_key = expected_bank_key_from_fx_trade
-        if debug_mode:
-            st.success(f"DEBUG: DIRECT BANK KEY MATCH! Found bank statement: '{target_bank_df_key}' based on FX trade info and user selection.")
-    else:
-        # If no direct match, log and move to unmatched
-        if debug_mode:
-            st.warning(f"DEBUG: No exact bank statement file found matching FX trade expected key '{expected_bank_key_from_fx_trade}'.")
+    if expected_bank_key not in all_bank_dfs:
         unmatched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
-            'Bank Table (Expected)': expected_bank_key_from_fx_trade,
+            'Bank Table (Expected)': expected_bank_key,
             'Action Type': action_type,
             'Amount': amount,
             'Vendor ID': fx_row.get('Vendor ID'),
-            'Vendor Name' : fx_row.get('Vendor Name'),
-            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
-            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
-            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
-            'Status': 'No Matching Bank Statement File Found (based on exact match from user selection)',
+            'Vendor Name': fx_row.get('Vendor Name'),
+            'Counterparty Dealer': fx_row.get('Counterparty Dealer'),
+            'Status': 'No Matching Bank Statement File Found',
             'Source Column': bank_currency_info_field
         })
         return None
 
-
-    bank_df = all_bank_dfs[target_bank_df_key]
+    bank_df = all_bank_dfs[expected_bank_key]
     bank_df_columns = bank_df.columns.tolist()
+    bank_currency = expected_bank_key.split(' ')[1].upper() if ' ' in expected_bank_key else "UNKNOWN"
 
-    # The bank_statement_currency is now directly from the target_bank_df_key
-    bank_statement_currency_parts = target_bank_df_key.split(' ')
-    bank_statement_currency = bank_statement_currency_parts[1].upper() if len(bank_statement_currency_parts) > 1 else "UNKNOWN"
-
-    # 'Date' is the standardized column name after pre-processing in main_dashboard
     date_column = 'Date'
-    # Use the updated resolve_amount_column based on the new criteria
-    amount_column = resolve_amount_column(bank_df_columns, action_type, bank_statement_currency)
-    
-    if date_column not in bank_df.columns:
-        # This should ideally not happen if pre-processing is successful in main_dashboard
+    amount_column = resolve_amount_column(bank_df_columns, action_type, bank_currency)
+    if date_column not in bank_df.columns or not amount_column or amount_column not in bank_df.columns:
         unmatched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
-            'Bank Table (Expected)': target_bank_df_key,
+            'Bank Table (Expected)': expected_bank_key,
             'Action Type': action_type,
             'Amount': amount,
             'Vendor ID': fx_row.get('Vendor ID'),
-            'Vendor Name' : fx_row.get('Vendor Name'),
-            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
-            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
-            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
-            'Status': f"Mapped Date Column '{date_column}' Missing in Bank Statement after pre-processing",
+            'Vendor Name': fx_row.get('Vendor Name'),
+            'Counterparty Dealer': fx_row.get('Counterparty Dealer'),
+            'Status': 'Missing Required Columns in Bank Statement',
             'Source Column': bank_currency_info_field
         })
-        if debug_mode:
-            st.error(f"DEBUG: Mapped date column '{date_column}' not found in bank statement '{target_bank_df_key}' during matching.")
         return None
 
-    if not amount_column or amount_column not in bank_df.columns:
-        unmatched_list.append({
-            'Date': parsed_date.strftime('%Y-%m-%d'),
-            'Bank Table (Expected)': target_bank_df_key,
-            'Action Type': action_type,
-            'Amount': amount,
-            'Vendor ID': fx_row.get('Vendor ID'),
-            'Vendor Name' : fx_row.get('Vendor Name'),
-            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
-            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
-            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
-            'Status': 'Missing or Unresolvable Amount Column in Bank Statement based on new rules',
-            'Source Column': bank_currency_info_field
-        })
-        if debug_mode:
-            st.warning(f"DEBUG: Missing or unresolvable amount column ({amount_column}) in bank statement '{target_bank_df_key}'.")
-        return None
-    
-    # Date in bank_df['Date'] is already parsed to datetime during pre-processing in main_dashboard
-    # Filter based on the 'Date' column which is already a datetime type
+    # Filter bank rows within date tolerance window
     date_matches = bank_df[
-        bank_df['Date'].dt.date.between( # Use 'Date' column
+        bank_df['Date'].dt.date.between(
             parsed_date.date() - pd.Timedelta(days=date_tolerance_days),
             parsed_date.date() + pd.Timedelta(days=date_tolerance_days)
         )
     ]
 
-    if debug_mode:
-        st.info(f"DEBUG: Found {len(date_matches)} potential date matches in '{target_bank_df_key}' within ±{date_tolerance_days} days of {parsed_date.strftime('%Y-%m-%d')}.")
-
+    matched_records = []
 
     for idx, bank_row in date_matches.iterrows():
-        # Only consider bank records that have not been matched yet
-        # if bank_df.at[idx, "Matched"] == True:
-        #     st.warning(f"DEBUG: Skipping bank record {idx} in {target_bank_df_key} (AMOUNT {bank_row.get(amount_column)}) (Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Desc: {bank_row.get('Description Column', 'N/A')}) as it's already matched.")
-        #     continue
+        bank_amt = safe_float(bank_row.get(amount_column))
+        if bank_amt is None:
+            continue
 
-        bank_amt_raw = bank_row.get(amount_column)
-        bank_amt = safe_float(bank_amt_raw)
+        converted_amount = convert_currency(amount, trade_currency, bank_currency, parsed_date)
+        amount_diff = abs(bank_amt - converted_amount) if converted_amount is not None else float('inf')
 
-        if debug_mode:
-            st.info(f"DEBUG: Checking bank record {idx} in '{target_bank_df_key}':")
-            st.info(f"  Bank Record Details - Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Desc: {bank_row.get('Description', 'N/A')}, Amount (raw): {bank_amt_raw}, Amount (parsed): {bank_amt}, Column: {amount_column}")
-
-        if bank_amt is not None:
-            # The trade_currency is the currency of the FX amount (e.g., Buy Currency Amount or Sell Currency Amount)
-            # The bank_statement_currency is the currency of the bank account (e.g., KES, USD, EUR)
-            converted_amount = convert_currency(amount, trade_currency, bank_statement_currency, parsed_date)
-            amount_diff = abs(bank_amt - converted_amount) if converted_amount is not None else float('inf')
+        if converted_amount and abs(converted_amount) > 0.01 and amount_diff < 0.05:
+            matched_records.append({
+                'Bank Index': idx,
+                'Bank Date': bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else None,
+                'Description': str(bank_row.get('Description', '')).strip(),
+                'Debit': safe_float(bank_row.get('Debit')),
+                'Credit': safe_float(bank_row.get('Credit')),
+                'Matched Column': amount_column,
+                'Bank Amount': bank_amt
+            })
+            bank_df.at[idx, "Matched"] = True
 
             if debug_mode:
-                st.info(f"DEBUG: Trade Amount: {amount} {trade_currency}, Bank Statement Currency: {bank_statement_currency}. Converted Trade Amount: {converted_amount:.2f}")
-                st.info(f"DEBUG: Bank Amount: {bank_amt:.2f}, Converted Trade Amount: {converted_amount:.2f}, Difference: {amount_diff:.2f} (Tolerance: 0.05)")
+                st.info(f"✅ Sub-Match Found: Bank[{idx}] {bank_amt:.2f} {bank_currency} "
+                        f"≈ FX {amount:.2f} {trade_currency} (Converted {converted_amount:.2f})")
 
-
-            # Match within a small tolerance for floating point comparisons
-            if converted_amount is not None and abs(converted_amount) > 0.01 and amount_diff < 0.05: # Adjusted tolerance
-                matched_list.append({
-                    'Date': parsed_date.strftime('%Y-%m-%d'),
-                    'Bank Table': target_bank_df_key,
-                    'Action Type': action_type,
-                    'Trade Amount': amount,
-                    'Trade Currency': trade_currency,
-                    'Bank Statement Amount': bank_amt,
-                    'Bank Statement Currency': bank_statement_currency,
-                    'Converted Trade Amount': converted_amount,
-                    'Matched In Column': amount_column,
-                    'Date Column Used': date_column,
-                    'Source Column': bank_currency_info_field
-                })
-                found_match = True
-                bank_df.at[idx, "Matched"] = True # Mark this bank record as matched
-                if debug_mode:
-                    st.success(f"DEBUG: MATCH FOUND! FX Trade Date: {parsed_date.strftime('%Y-%m-%d')}, Amount: {amount:.2f} {trade_currency} (Converted: {converted_amount:.2f} {bank_statement_currency}) matched with Bank Record {idx} (Date: {bank_row.get(date_column).strftime('%Y-%m-%d')}, Amount: {bank_amt:.2f} {bank_statement_currency}).")
-                return (target_bank_df_key, idx) # Return unique identifier of matched bank record
-            elif debug_mode:
-                st.info(f"DEBUG: No amount match for bank record {idx}. Difference: {amount_diff:.2f}. Bank Record: Date: {bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else 'N/A'}, Amount: {bank_amt:.2f}, Description: {bank_row.get('Description', 'N/A')}")
-        elif debug_mode:
-            st.info(f"DEBUG: Bank amount is None or invalid for row {idx}.")
-
-    if not found_match:
-        unmatched_list.append({
+    if matched_records:
+        # Combine summary info for main table
+        matched_list.append({
             'Date': parsed_date.strftime('%Y-%m-%d'),
-            'Bank Table (Expected)': target_bank_df_key,
+            'Bank Table': expected_bank_key,
             'Action Type': action_type,
-            'Amount': amount,
-            'Vendor ID': fx_row.get('Vendor ID'),
-            'Vendor Name' : fx_row.get('Vendor Name'),
-            'Counterparty Dealer' : fx_row.get('Counterparty Dealer'),
-            'Buy Trade Info' : fx_row.get('Buy Trade Info') ,
-            'Buy Trade Info' : fx_row.get('Buy Trade Info'),
-            'Status': 'No Bank Statement Match (Amount or Date Tolerance)',
-            'Source Column': bank_currency_info_field
-        })
-        if debug_mode:
-            st.warning(f"DEBUG: No match found for FX trade (Date: {parsed_date.strftime('%Y-%m-%d')}, Amount: {amount}) after checking all potential bank records in '{target_bank_df_key}'.")
+            'Trade Amount': amount,
+            'Trade Currency': trade_currency,
+            'Bank Statement Currency': bank_currency,
+            'Converted Trade Amount': converted_amount,
+            'Total Bank Matches': len(matched_records),
 
-    return None # No match found
+            # Flattened first match (for CSV friendliness)
+            'Matched Bank Record Index': matched_records[0]['Bank Index'],
+            'Matched Bank Record Date': matched_records[0]['Bank Date'],
+            'Matched Bank Description': matched_records[0]['Description'],
+            'Matched Bank Debit': matched_records[0]['Debit'],
+            'Matched Bank Credit': matched_records[0]['Credit'],
+
+            # JSON for full list of all matches
+            'All Matched Bank Records': matched_records
+        })
+
+        if debug_mode:
+            st.success(f"✅ FX {amount:.2f} {trade_currency} matched {len(matched_records)} bank entries in '{expected_bank_key}'.")
+        return [(expected_bank_key, m['Bank Index']) for m in matched_records]
+
+    # If none matched
+    unmatched_list.append({
+        'Date': parsed_date.strftime('%Y-%m-%d'),
+        'Bank Table (Expected)': expected_bank_key,
+        'Action Type': action_type,
+        'Amount': amount,
+        'Vendor ID': fx_row.get('Vendor ID'),
+        'Vendor Name': fx_row.get('Vendor Name'),
+        'Counterparty Dealer': fx_row.get('Counterparty Dealer'),
+        'Status': 'No Bank Statement Match (Amount or Date Tolerance)',
+        'Source Column': bank_currency_info_field
+    })
+
+    if debug_mode:
+        st.warning(f"⚠️ No matches found for FX {amount:.2f} {trade_currency} in {expected_bank_key}.")
+    return None
+
 
 def graphed_analysis_app(all_bank_dfs: dict): # Added all_bank_dfs as an argument
     st.title("💰 FX Trade Verification and Reconciliation")
