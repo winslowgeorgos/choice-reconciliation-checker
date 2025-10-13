@@ -7,6 +7,7 @@ import seaborn as sns
 import uuid
 import os
 import pickle
+import json
 
 # --- Constants ---
 UPLOAD_DIR = "data/uploads"
@@ -234,7 +235,6 @@ def get_excel_sheet_names(uploaded_file):
         return []
 
 # --- Reconciliation Logic ---
-
 def reconcile_adjustment_row(
     adj_row: pd.Series,
     all_bank_dfs: dict,
@@ -248,8 +248,10 @@ def reconcile_adjustment_row(
 ) -> bool:
     """
     Attempts to reconcile a single adjustment row against all uploaded bank statements.
-    Returns True if a match is found, False otherwise.
+    Returns True if at least one match is found, False otherwise.
     Appends to provided matched_adjustments_list or unmatched_adjustments_list lists.
+    Also performs bidirectional tracking by recording adjustment details on the matched bank rows
+    using bank_df.at[idx, 'Matched_Adjustment_Records'] = [ ... ].
     """
     if matched_adjustments_list is None or unmatched_adjustments_list is None or matched_bank_keys is None:
         raise ValueError("Matched/unmatched lists and matched_bank_keys set must be provided.")
@@ -283,10 +285,24 @@ def reconcile_adjustment_row(
        (mode == 'foreign' and status != 'completed'):
         if debug:
             st.warning(f"❌ Skipping row due for mode '{mode}' and status '{status}'")
-        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Skipped due to status "{status}" for mode "{mode}"'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': f'Skipped due to status \"{status}\" for mode \"{mode}\"'})
         return False
 
+    # Extract all tracking columns
+    tracking_id = adj_row.get('Request ID', '')
     intermediary_account = str(adj_row.get('Intermediary Account', '')).strip()
+    payment_channel = adj_row.get('Payment Channel', '')
+    counterparty_bank = adj_row.get('Counterparty Bank', '')
+    counterparty_account_id = adj_row.get('Counterparty Account ID', '')
+    counterparty_name = adj_row.get('Counterparty Name', '')
+    transfer_reference_no = adj_row.get('Transfer Reference No.', '')
+    transaction_narrative = adj_row.get('Transaction Narrative', '')
+    tx_id = adj_row.get('TX ID', '')
+    customer_account_number = adj_row.get('Customer Account Number', '')
+    account_name = adj_row.get('Account Name', '')
+    account_channel = adj_row.get('Account Channel', '')
+    operation = str(adj_row.get('Operation', '')).strip().lower()
+    product = adj_row.get('Product', '')
     currency = str(adj_row.get('Currency', '')).strip().upper()
 
     expected_bank_name_adj = None
@@ -322,6 +338,7 @@ def reconcile_adjustment_row(
         st.info(f"   Expected (from Adjustment) Bank: '{expected_bank_name_adj}', Currency: '{expected_currency_adj}'")
 
     target_bank_df_key = None
+    bank_match_reason = ""
     for bank_df_key in all_bank_dfs.keys():
         key_parts = bank_df_key.split(' ')
         if len(key_parts) >= 2:
@@ -338,26 +355,24 @@ def reconcile_adjustment_row(
             st.info(f"     Adjustment: Bank='{expected_bank_name_adj}', Currency='{expected_currency_adj}'")
 
         bank_name_from_adj_standardized = ""
-        # Using the simplified direct mapping from BANK_NAME_MAP for the FX side's intermediary account
-        # to match the standardized bank names chosen for bank statements.
-        # This assumes 'intermediary_account' in FX Tracker is a human-readable bank name.
         matched_bank_name = False
         for long, short in BANK_NAME_MAP.items():
             if expected_bank_name_adj.startswith(long):
                 bank_name_from_adj_standardized = short
                 matched_bank_name = True
+                bank_match_reason = f"Bank name mapped via BANK_NAME_MAP: {long} -> {short}"
                 break
-        
-        if not matched_bank_name:
-            # If no direct map found, try to extract the first word or use as is
-            bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0]
 
+        if not matched_bank_name:
+            bank_name_from_adj_standardized = expected_bank_name_adj.lower().split(' ')[0]
+            bank_match_reason = f"Bank name standardized: {expected_bank_name_adj} -> {bank_name_from_adj_standardized}"
 
         bank_name_match = (bank_name_from_adj_standardized == bank_name_from_key)
         currency_match = (expected_currency_adj.lower() == currency_from_key.lower())
 
         if bank_name_match and currency_match:
             target_bank_df_key = bank_df_key
+            bank_match_reason += f" | Direct match with bank statement: {target_bank_df_key}"
             if debug:
                 st.success(f"   ✅ Match found for bank DF key: {target_bank_df_key} (Direct Bank Name & Currency Match)")
             break
@@ -367,7 +382,7 @@ def reconcile_adjustment_row(
     if not target_bank_df_key:
         if debug:
             st.error(f"   ❌ No matching bank statement found for this adjustment based on selected bank statement name and currency.")
-        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)- {target_bank_df_key}'})
+        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No matching bank statement found (direct bank name/currency mismatch)'})
         return False
 
     bank_df = all_bank_dfs[target_bank_df_key]
@@ -391,8 +406,7 @@ def reconcile_adjustment_row(
         unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Missing date/amount column in bank statement'})
         return False
 
-    # Convert bank statement date column to datetime objects
-    # This should already be done during pre-processing in main_dashboard, but a safeguard is good.
+    # Ensure parsed date column exists
     if '_ParsedDate' not in bank_df.columns:
         bank_df['_ParsedDate'] = bank_df[date_column].apply(parse_date)
 
@@ -409,32 +423,92 @@ def reconcile_adjustment_row(
         st.info(f"🔎 Found {len(date_matches_df)} date matches in bank statement '{target_bank_df_key}'")
 
     match_found = False
+    matches_count = 0  # Track total matches found for this adjustment
+    
     for idx, bank_row in date_matches_df.iterrows():
         bank_amt_raw = bank_row.get(amount_column)
         bank_amt = safe_float(bank_amt_raw)
 
-        if bank_amt is None or parsed_date.strftime('%Y-%m-%d') != bank_row['_ParsedDate'].strftime('%Y-%m-%d') or abs(bank_amt) < 0.01:
+        if bank_amt is None or bank_row['_ParsedDate'] is None or abs(bank_amt) < 0.01:
             continue
 
         if debug:
             st.info(f"  Comparing bank amount {bank_amt} (from column '{amount_column}') with adjustment amount {amount}")
 
-        if abs(abs(bank_amt) - abs(amount)) <= amount_tolerance:
-            bank_record_key_operation = 'debit' if 'debit' in amount_column.lower() or bank_amt < 0 else 'credit'
-            if 'credit' in amount_column.lower(): # Specific check for credit column
-                bank_record_key_operation = 'credit'
+        # Compare absolute values (signs handled via operation later)
+        amount_diff = abs(abs(bank_amt) - abs(amount))
+        if amount_diff <= amount_tolerance:
+            matches_count += 1  # Increment match counter
             
-            # Generate a unique key for the bank record to mark it as matched
+            bank_record_key_operation = 'debit' if 'debit' in amount_column.lower() or bank_amt < 0 else 'credit'
+            if 'credit' in amount_column.lower():
+                bank_record_key_operation = 'credit'
+
             bank_record_key = (
                 target_bank_df_key,
                 bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
                 round(amount, 2),
-                bank_record_key_operation # Use the determined operation for the key
+                bank_record_key_operation
             )
-            
-            # Ensure we don't double-count a bank record if it matches multiple adjustments
-            # if bank_record_key not in matched_bank_keys:
-            matched_adjustments_list.append({
+
+            # Build match details for tracking
+            match_details = {
+                'match_type': 'amount_date_operation',
+                'bank_statement_found_in': target_bank_df_key,
+                'date_tolerance_days': date_tolerance_days,
+                'amount_tolerance': amount_tolerance,
+                'actual_amount_difference': amount_diff,
+                'date_column_used': date_column,
+                'amount_column_used': amount_column,
+                'bank_match_reason': bank_match_reason,
+                'match_sequence_number': matches_count,  # Which match this is (1st, 2nd, etc.)
+                'total_matches_for_adjustment': matches_count,  # Will be updated later
+                'matching_criteria_used': {
+                    'amount_match': True,
+                    'date_match': True,
+                    'operation_match': True,
+                    'bank_match': True,
+                    'currency_match': True
+                }
+            }
+
+            # Build the bank->adjustment details and adjustment->bank details for two-way link
+            matched_bank_record_details = {
+                'Bank_Table': target_bank_df_key,
+                'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
+                'Bank_Statement_Amount': bank_amt,
+                'Bank_Matched_Column': amount_column,
+                'Bank_Row_Index': int(idx),
+                'Match_Details': match_details  # Track how match was found
+            }
+
+            # Enhanced adjustment details with all tracking columns
+            adj_details = {
+                'Adjustment_Index': int(adj_row.name) if adj_row.name is not None else None,
+                'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
+                'Adjustment_Amount': amount,
+                'Adjustment_Operation': operation,
+                'Adjustment_Intermediary_Account': intermediary_account,
+                'Adjustment_Currency': currency,
+                'Matched_Bank_Record_Key': bank_record_key,
+                'Match_Details': match_details,  # Track how match was found
+                # Additional tracking columns
+                'Request_ID': tracking_id,
+                'Payment_Channel': payment_channel,
+                'Counterparty_Bank': counterparty_bank,
+                'Counterparty_Account_ID': counterparty_account_id,
+                'Counterparty_Name': counterparty_name,
+                'Transfer_Reference_No': transfer_reference_no,
+                'Transaction_Narrative': transaction_narrative,
+                'TX_ID': tx_id,
+                'Customer_Account_Number': customer_account_number,
+                'Account_Name': account_name,
+                'Account_Channel': account_channel,
+                'Product': product
+            }
+
+            # Append to matched_adjustments_list: include bank details for traceability
+            matched_record = {
                 'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
                 'Adjustment_Amount': amount,
                 'Adjustment_Operation': operation,
@@ -444,30 +518,129 @@ def reconcile_adjustment_row(
                 'Bank_Statement_Date': bank_row['_ParsedDate'].strftime('%Y-%m-%d'),
                 'Bank_Statement_Amount': bank_amt,
                 'Bank_Matched_Column': amount_column,
-                'Bank_Row_Index': idx
-            })
+                'Bank_Row_Index': int(idx),
+                'Matched_Bank_Record': matched_bank_record_details,
+                'Match_Details': match_details,  # Track how match was found
+                # Additional tracking columns for matching records
+                'Request_ID': tracking_id,
+                'Payment_Channel': payment_channel,
+                'Counterparty_Bank': counterparty_bank,
+                'Counterparty_Account_ID': counterparty_account_id,
+                'Counterparty_Name': counterparty_name,
+                'Transfer_Reference_No': transfer_reference_no,
+                'Transaction_Narrative': transaction_narrative,
+                'TX_ID': tx_id,
+                'Customer_Account_Number': customer_account_number,
+                'Account_Name': account_name,
+                'Account_Channel': account_channel,
+                'Product': product
+            }
+            matched_adjustments_list.append(matched_record)
 
-            # st.info(f"   ✅ Match found: Adjustment Amount {amount} on {parsed_date.strftime('%Y-%m-%d')} matched with Bank Amount {bank_amt} on {bank_row['_ParsedDate'].strftime('%Y-%m-%d')} in '{target_bank_df_key}' : bank key data {bank_record_key}")
-
-            matched_bank_keys.add(bank_record_key)
-            if debug:
-                st.success("✅ Match found and recorded!")
-            match_found = True
-            break
-            # else:
-            #     if debug:
-            #         st.info(f"  Bank record {bank_record_key} already matched. Skipping duplicate.")
-            #     # We count this adjustment as unmatched if its corresponding bank record is already used
-            #     # or we might want to specifically track this as a "potential duplicate" if needed.
-            #     # For now, let's treat it as unmatched since its target bank entry is taken.
-            #     # unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'Bank record already matched to another adjustment'})
-            #     continue # Continue searching for another match for this adjustment
+            # --- TWO-WAY: attach adjustment details to the bank row ---
+            # FIX: Use a different approach for storing matched records
+            # Instead of storing lists in dataframe cells, we'll store JSON strings
+            if "Matched_Adjustment_Records" not in bank_df.columns:
+                bank_df["Matched_Adjustment_Records"] = ""
             
+            current_adj_matches_str = bank_df.loc[idx, "Matched_Adjustment_Records"]
+            current_adj_matches = []
+            
+            # Parse existing matches if any
+            if current_adj_matches_str and current_adj_matches_str != "":
+                try:
+                    current_adj_matches = json.loads(current_adj_matches_str)
+                except:
+                    current_adj_matches = []
+            
+            # Add new match
+            current_adj_matches.append(adj_details)
+            
+            # Store as JSON string to avoid pandas assignment issues
+            bank_df.loc[idx, "Matched_Adjustment_Records"] = json.dumps(current_adj_matches)
+
+            # Track match counts on bank row
+            if "Total_Adjustment_Matches" not in bank_df.columns:
+                bank_df["Total_Adjustment_Matches"] = 0
+            
+            current_match_count = bank_df.loc[idx, "Total_Adjustment_Matches"]
+            bank_df.loc[idx, "Total_Adjustment_Matches"] = current_match_count + 1
+            
+            # Also store match details directly on bank row for easy access
+            if "Match_Found_Via" not in bank_df.columns:
+                bank_df["Match_Found_Via"] = ""
+            
+            bank_df.loc[idx, "Match_Found_Via"] = json.dumps(match_details)  # Convert to JSON string
+            
+            if "Match_Sequence_Number" not in bank_df.columns:
+                bank_df["Match_Sequence_Number"] = 0
+            
+            bank_df.loc[idx, "Match_Sequence_Number"] = matches_count
+
+            # Mark bank row as matched (boolean)
+            if "Matched" not in bank_df.columns:
+                bank_df["Matched"] = False
+            
+            bank_df.loc[idx, "Matched"] = True
+            matched_bank_keys.add(bank_record_key)
+
+            if debug:
+                st.success(f"✅ Match #{matches_count} found and recorded! Adjustment {amount} ({parsed_date.strftime('%Y-%m-%d')}) ↔ Bank[{idx}] {bank_amt} in '{target_bank_df_key}'")
+                st.info(f"   Match Details: {match_details}")
+
+            match_found = True
+            # continue searching for other potential bank matches (do NOT break),
+            # so an adjustment can be linked to multiple bank records if appropriate.
+
+    # Update match counts for all matched records from this adjustment
+    if match_found:
+        # Update the total_matches_for_adjustment in all match details for this adjustment
+        for match_record in matched_adjustments_list[-matches_count:]:  # Update only the recent matches
+            if 'Match_Details' in match_record:
+                match_record['Match_Details']['total_matches_for_adjustment'] = matches_count
+                match_record['Total_Matches_For_This_Adjustment'] = matches_count
+        
+        # Also update in the bank dataframe
+        for idx, bank_row in date_matches_df.iterrows():
+            if "Matched_Adjustment_Records" in bank_df.columns and bank_df.loc[idx, "Matched_Adjustment_Records"]:
+                try:
+                    current_adj_matches = json.loads(bank_df.loc[idx, "Matched_Adjustment_Records"])
+                    for adj_match in current_adj_matches:
+                        if 'Match_Details' in adj_match:
+                            adj_match['Match_Details']['total_matches_for_adjustment'] = matches_count
+                        adj_match['Total_Matches_For_This_Adjustment'] = matches_count
+                    # Update the stored JSON
+                    bank_df.loc[idx, "Matched_Adjustment_Records"] = json.dumps(current_adj_matches)
+                except:
+                    pass  # Skip if there's an issue parsing
+
+        if debug:
+            st.info(f"📊 Adjustment matched with {matches_count} bank record(s) in total")
 
     if not match_found:
         if debug:
             st.error("❌ No amount match found within tolerance for this adjustment.")
-        unmatched_adjustments_list.append({**adj_row.to_dict(), 'Reason': 'No amount match in bank statement'})
+        # Include all tracking columns in unmatched records as well
+        unmatched_record = {**adj_row.to_dict(), 'Reason': 'No amount match in bank statement'}
+        # Ensure all tracking columns are included
+        for col_name, col_value in [
+            ('Request ID', tracking_id),
+            ('Payment Channel', payment_channel),
+            ('Counterparty Bank', counterparty_bank),
+            ('Counterparty Account ID', counterparty_account_id),
+            ('Counterparty Name', counterparty_name),
+            ('Transfer Reference No.', transfer_reference_no),
+            ('Transaction Narrative', transaction_narrative),
+            ('TX ID', tx_id),
+            ('Customer Account Number', customer_account_number),
+            ('Account Name', account_name),
+            ('Account Channel', account_channel),
+            ('Product', product)
+        ]:
+            if col_name not in unmatched_record:
+                unmatched_record[col_name] = col_value
+        unmatched_adjustments_list.append(unmatched_record)
+        
     return match_found
 
 
@@ -656,7 +829,6 @@ def perform_full_reconciliation(bank_dfs: dict):
     st.success("Overall Reconciliation Complete!")
     st.write("---")
     st.write(f"📄 Total Unmatched Bank Records (Global): {len(st.session_state.df_unmatched_bank_records)}")
-
 
 def perform_data_analysis_and_visualizations():
     """Performs data analysis and generates visualizations based on reconciliation results."""
