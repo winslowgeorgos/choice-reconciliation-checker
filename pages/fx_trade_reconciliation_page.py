@@ -179,7 +179,8 @@ def normalize_bank_key(raw_key, debug_mode=False): # Added debug_mode parameter
         'sbm bank': 'SBM', # Changed to Title Case
         'absa bank': 'Absa', # Changed to Title Case
         'kingdom bank': 'Kingdom', # Changed to Title Case
-        'uba': 'UBA' # Added UBA, assuming it should be capitalized
+        'uba': 'UBA', # Added UBA, assuming it should be capitalized
+        'yeepay' : 'Yeepay', # Added Yeepay, assuming it should be capitalized
     }
 
     # First, try direct replacement

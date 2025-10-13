@@ -105,8 +105,8 @@ PREDEFINED_BANK_CURRENCY_OPTIONS = [
     "FX Temporary KES", "FX Temporary USD",
     "Other Temporary KES", "Other Temporary USD",
     "Unclaimed Funds KES", "Unclaimed Funds USD",
-    "Yeepay KES", "Yeepay USD",
-    "UBA KES" , "UBA USD" , "UBA"
+    "Yeepay KES", "Yeepay USD", "Yeepay CNY",
+    "UBA KES", "UBA USD", "UBA EUR", "UBA GBP",
     # Add more as needed
 ]
 

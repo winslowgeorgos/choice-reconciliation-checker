@@ -142,7 +142,7 @@ def normalize_bank_key(raw_key):
         "equity bank": "Equity", "i&m bank": "I&M",
         "central bank of kenya": "CBK", "kenya commercial bank": "KCB",
         "kcb bank": "KCB", "sbm bank (kenya) limited": "SBM", "sbm bank": "SBM",
-        "absa bank": "Absa", "kingdom bank": "Kingdom", "uba": "UBA"
+        "absa bank": "Absa", "kingdom bank": "Kingdom", "uba": "UBA", "yeepay" : "Yeepay"
     }
     low = s.lower()
     for long, short in replacements.items():
