@@ -381,13 +381,13 @@ if page_selection == "Bank Statement Management":
                 all_success = False
 
             # Combine all sheets from this file
-            if sheet_dfs:
-                file_df = pd.concat(sheet_dfs, ignore_index=True)
-                st.session_state.bank_dfs[f"{data['file_obj'].name}_combined"] = file_df
-                dfs_to_concat.append(file_df)
-            else:
-                st.error(f"No valid sheets found in '{data['file_obj'].name}'")
-                all_success = False
+            # if sheet_dfs:
+            #     file_df = pd.concat(sheet_dfs, ignore_index=True)
+            #     st.session_state.bank_dfs[f"{data['file_obj'].name}_combined"] = file_df
+            #     dfs_to_concat.append(file_df)
+            # else:
+            #     st.error(f"No valid sheets found in '{data['file_obj'].name}'")
+            #     all_success = False
 
         if all_success and dfs_to_concat:
             st.session_state.merged_bank_statement = pd.concat(dfs_to_concat, ignore_index=True)
