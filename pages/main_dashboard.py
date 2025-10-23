@@ -4,12 +4,555 @@ from io import BytesIO
 import pandas as pd
 from datetime import datetime, timedelta
 import io
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+import plotly.graph_objects as go
 
 # Import functions from other pages (assuming these files exist in the same directory)
 from fx_reconcilliation_app_page import fx_reconciliation_app
 from fx_trade_reconciliation_page import graphed_analysis_app
 from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
 from business_fx_reconciliation_page import business_reconciliation_app   # NEW
+
+import requests
+import time
+
+
+import re
+from typing import Optional, Dict
+import json
+
+
+# --- FastForex API Configuration ---
+FASTFOREX_API_URL = "https://api.fastforex.io/fetch-all"
+FASTFOREX_API_KEY = "4b744777d6-9c3eed3143-t4gxsb"
+CACHE_FILE = "exchange_rates_cache.json"
+
+# --- Target Currencies ---
+TARGET_CURRENCIES = ["KES", "USD", "EUR", "GBP", "CNY", "UGX", "RWF", "TZS", "ZAR"]
+
+# --- Currency Code Mapping ---
+CURRENCY_NAME_MAP = {
+    "KES": "KENYA SHILLING",
+    "USD": "US DOLLAR",
+    "GBP": "STG POUND", 
+    "EUR": "EURO",
+    "CNY": "CHINESE YUAN",
+    "UGX": "UGANDA SHILLING",
+    "RWF": "RWANDA FRANC",
+    "TZS": "TANZANIA SHILLING",
+    "ZAR": "SA RAND"
+}
+
+def get_live_exchange_rates(base_currency: str = "KES") -> Optional[Dict[str, float]]:
+    """
+    Fetch live exchange rates from FastForex API and return rates for converting TO KES.
+    Returns dict with currency codes as keys and conversion rates TO KES as values.
+    """
+    try:
+        print("🌍 Fetching live exchange rates from FastForex API...")
+        
+        params = {
+            "from": base_currency,
+            "api_key": FASTFOREX_API_KEY
+        }
+
+        headers = {
+            "accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
+        response = requests.get(FASTFOREX_API_URL, params=params, headers=headers, timeout=30)
+        
+        if response.status_code != 200:
+            st.error(f"❌ API returned status code: {response.status_code}")
+            return None
+
+        data = response.json()
+        
+        if "results" not in data:
+            st.error("❌ Invalid API response format")
+            return None
+
+        results = data.get('results', {})
+        
+        # Convert rates to KES (inverse of the provided rates)
+        # FastForex gives: 1 KES = X FOREIGN, but we need: 1 FOREIGN = Y KES
+        exchange_rates_to_kes = {}
+        
+        for currency_code, rate_from_kes in results.items():
+            if currency_code in TARGET_CURRENCIES and rate_from_kes > 0:
+                # Convert to KES: 1 FOREIGN = 1 / rate KES
+                rate_to_kes = 1.0 / rate_from_kes
+                exchange_rates_to_kes[currency_code] = rate_to_kes
+                print(f"✅ {currency_code}: 1 {currency_code} = {rate_to_kes:.2f} KES")
+        
+        # Always include KES with rate 1
+        exchange_rates_to_kes["KES"] = 1.0
+        
+        st.success(f"✅ Fetched {len(exchange_rates_to_kes)} exchange rates")
+        return exchange_rates_to_kes
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Network error fetching exchange rates: {e}")
+        return get_fallback_rates()
+    except json.JSONDecodeError:
+        st.error("❌ Invalid JSON response from exchange rate API")
+        return get_fallback_rates()
+    except Exception as e:
+        st.error(f"❌ Unexpected error fetching exchange rates: {e}")
+        return get_fallback_rates()
+
+def get_fallback_rates() -> Dict[str, float]:
+    """Provide fallback exchange rates when API fails."""
+    st.warning("⚠️ Using fallback exchange rates")
+    
+    # Fallback rates (1 FOREIGN = X KES)
+    fallback_rates = {
+        "KES": 1.0,
+        "USD": 129.24,    # 1 USD = 129.24 KES
+        "EUR": 150.64,    # 1 EUR = 150.64 KES
+        "GBP": 173.38,    # 1 GBP = 173.38 KES
+        "CNY": 18.15,     # 1 CNY = 18.15 KES
+        "UGX": 0.037,     # 1 UGX = 0.037 KES
+        "RWF": 0.089,     # 1 RWF = 0.089 KES
+        "TZS": 0.053,     # 1 TZS = 0.053 KES
+        "ZAR": 7.45       # 1 ZAR = 7.45 KES
+    }
+    
+    return fallback_rates
+
+def convert_to_kes(amount: float, currency: str, exchange_rates: Dict[str, float]) -> float:
+    """
+    Convert amount from given currency to KES.
+    
+    Args:
+        amount: Amount in original currency
+        currency: Currency code (USD, EUR, etc.)
+        exchange_rates: Dict with conversion rates TO KES
+    
+    Returns:
+        Amount converted to KES
+    """
+    if not amount or pd.isna(amount):
+        return 0.0
+    
+    currency = currency.upper().strip()
+    
+    # Handle special currency variants
+    currency_merge_map = {
+        "KES-SPECIAL": "KES",
+        "USD-SPECIAL": "USD",
+        "USD-DCD": "USD",
+        "EUR-SPECIAL": "EUR",
+        "GBP-SPECIAL": "GBP",
+    }
+    currency = currency_merge_map.get(currency, currency)
+    
+    if currency == "KES":
+        return float(amount)
+    
+    if currency in exchange_rates:
+        rate = exchange_rates[currency]
+        return float(amount) * rate
+    else:
+        st.warning(f"⚠️ No exchange rate found for {currency}, using 1:1 conversion")
+        return float(amount)
+
+# --- Main reporting function (your existing code updated) ---
+
+def generate_cash_summary_report(per_bank_df: pd.DataFrame):
+    """Generate the cash summary report with currency conversion to KES."""
+    
+    if not per_bank_df.empty:
+        # --- Normalize column names ---
+        per_bank_df.columns = (
+            per_bank_df.columns.str.strip()
+            .str.replace(" ", "_")
+            .str.lower()
+        )
+
+        # --- Ensure required columns exist ---
+        required_cols = ["currency", "bank", "opening_balance", "closing_balance"]
+        missing = [c for c in required_cols if c not in per_bank_df.columns]
+        if missing:
+            st.warning(f"⚠️ Missing required columns: {missing}")
+        else:
+            # --- Combine SPECIAL and DCD currency variants ---
+            currency_merge_map = {
+                "KES-SPECIAL": "KES",
+                "USD-SPECIAL": "USD",
+                "USD-DCD": "USD",
+                "EUR-SPECIAL": "EUR",
+                "GBP-SPECIAL": "GBP",
+            }
+            per_bank_df["currency"] = (
+                per_bank_df["currency"].str.upper().replace(currency_merge_map)
+            )
+
+            # --- Get live exchange rates ---
+            st.info("🔄 Fetching live exchange rates...")
+            exchange_rates = get_live_exchange_rates("KES")
+            
+            # Display current rates for transparency
+            if exchange_rates:
+                # Show rates in both directions for clarity
+                rate_info_kes_to_foreign = " | ".join([f"1 KES = {1/rate:.4f} {curr}" 
+                                    for curr, rate in exchange_rates.items() 
+                                    if curr in ['USD', 'EUR', 'GBP'] and curr != "KES"])
+                
+                rate_info_foreign_to_kes = " | ".join([f"1 {curr} = {rate:.2f} KES" 
+                                    for curr, rate in exchange_rates.items() 
+                                    if curr in ['USD', 'EUR', 'GBP'] and curr != "KES"])
+                
+                st.caption(f"💱 Live Rates (KES to Foreign): {rate_info_kes_to_foreign}")
+                st.caption(f"💱 Live Rates (Foreign to KES): {rate_info_foreign_to_kes}")
+
+            # --- Compute currency summary automatically ---
+            currency_summary = (
+                per_bank_df.groupby("currency", as_index=False)[["opening_balance", "closing_balance"]]
+                .sum()
+                .sort_values("currency")
+            )
+
+            # --- Add KES conversion columns ---
+            if exchange_rates:
+                currency_summary['opening_balance_kes'] = currency_summary.apply(
+                    lambda x: convert_to_kes(x['opening_balance'], x['currency'], exchange_rates), 
+                    axis=1
+                )
+                currency_summary['closing_balance_kes'] = currency_summary.apply(
+                    lambda x: convert_to_kes(x['closing_balance'], x['currency'], exchange_rates), 
+                    axis=1
+                )
+
+            # --- Add Grand Total row ---
+            grand_total_data = {
+                "currency": "GRAND TOTAL",
+                "opening_balance": currency_summary["opening_balance"].sum(),
+                "closing_balance": currency_summary["closing_balance"].sum()
+            }
+            
+            # Add KES totals for grand total if conversion columns exist
+            if 'opening_balance_kes' in currency_summary.columns:
+                grand_total_data["opening_balance_kes"] = currency_summary["opening_balance_kes"].sum()
+                grand_total_data["closing_balance_kes"] = currency_summary["closing_balance_kes"].sum()
+
+            grand_total = pd.DataFrame([grand_total_data])
+            currency_summary = pd.concat([currency_summary, grand_total], ignore_index=True)
+
+            # === Create Bank Consolidated Summary (KES) ===
+            # Derive clean bank names (strip currency suffixes)
+            per_bank_df["bank_clean"] = (
+                per_bank_df["bank"]
+                .astype(str)
+                .str.replace(r"\b(USD|EUR|GBP|KES|CNY|ZAR|TZS|UGX|RWF)\b", "", regex=True)
+                .str.replace(r"[-_/]+$", "", regex=True)
+                .str.strip()
+            )
+
+            # Convert all balances to KES equivalent
+            if exchange_rates:
+                per_bank_df["fx_rate_to_KES"] = per_bank_df["currency"].map(exchange_rates).fillna(1.0)
+                per_bank_df["opening_balance_KES"] = per_bank_df["opening_balance"] * per_bank_df["fx_rate_to_KES"]
+                per_bank_df["closing_balance_KES"] = per_bank_df["closing_balance"] * per_bank_df["fx_rate_to_KES"]
+            else:
+                # Fallback to default rates if live rates not available
+                fx_rates = {
+                    "KES": 1.0,
+                    "USD": 130.0,
+                    "EUR": 140.0,
+                    "GBP": 160.0,
+                }
+                per_bank_df["fx_rate_to_KES"] = per_bank_df["currency"].map(fx_rates).fillna(1.0)
+                per_bank_df["opening_balance_KES"] = per_bank_df["opening_balance"] * per_bank_df["fx_rate_to_KES"]
+                per_bank_df["closing_balance_KES"] = per_bank_df["closing_balance"] * per_bank_df["fx_rate_to_KES"]
+
+            # Consolidate by clean bank name
+            bank_summary_kes = (
+                per_bank_df.groupby("bank_clean", as_index=False)[["opening_balance_KES", "closing_balance_KES"]]
+                .sum()
+                .sort_values("closing_balance_KES", ascending=False)
+            )
+
+            # Identify top 3 banks by closing balance for highlighting
+            top_banks = bank_summary_kes.nlargest(3, "closing_balance_KES")
+            top_bank_names = top_banks["bank_clean"].tolist()
+
+            # === Create Excel workbook with XlsxWriter ===
+            excel_buffer = BytesIO()
+            wb = Workbook(write_only=False)
+            ws = wb.active
+            ws.title = "Cash Summary"
+
+            # --- Create custom number formats ---
+            kes_currency_format = '#,##0.00" KSh"'
+            number_format = '#,##0.00'
+            
+            # Store formats for reuse
+            formats = {
+                'kes_currency': kes_currency_format,
+                'number': number_format,
+                'header_bold': Font(bold=True, size=14),
+                'section_header': Font(bold=True),
+                'column_header': Font(bold=True),
+                'grand_total': Font(bold=True, color="FFFFFF"),
+            }
+
+            # --- Header ---
+            report_date = pd.Timestamp.today().strftime("%d %B %Y").upper()
+            ws.merge_cells("A1:L1")
+            ws["A1"] = f"CASH SUMMARY AS AT {report_date}"
+            ws["A1"].font = formats['header_bold']
+            ws["A1"].alignment = Alignment(horizontal="center")
+
+            # --- Define section order ---
+            currency_order = ["KES", "USD", "EUR", "GBP", "CNY", "UGX", "RWF", "TZS", "ZAR"]
+            start_col = 1  # Excel columns start at A (1)
+
+            thin_border = Border(
+                left=Side(style="thin"), right=Side(style="thin"),
+                top=Side(style="thin"), bottom=Side(style="thin")
+            )
+
+            # --- Write section headers for each currency ---
+            for i, currency in enumerate(currency_order):
+                df_cur = per_bank_df[per_bank_df["currency"].str.upper() == currency]
+                if df_cur.empty:
+                    continue
+
+                # Column offsets (3 columns per currency block)
+                col_offset = (i * 3) + start_col
+
+                # Section title
+                ws.merge_cells(
+                    start_row=3, start_column=col_offset,
+                    end_row=3, end_column=col_offset + 2
+                )
+                ws.cell(row=3, column=col_offset).value = f"BANK {currency} ACCOUNTS"
+                ws.cell(row=3, column=col_offset).font = formats['section_header']
+                ws.cell(row=3, column=col_offset).alignment = Alignment(horizontal="center")
+
+                # Column headers
+                headers = ["BANK NAME", "OPENING BALANCE", "CLOSING BALANCE"]
+                for j, header in enumerate(headers):
+                    cell = ws.cell(row=4, column=col_offset + j, value=header)
+                    cell.font = formats['column_header']
+                    cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+                    cell.border = thin_border
+                    cell.alignment = Alignment(horizontal="center")
+
+                # Write data rows
+                for r_idx, row in enumerate(df_cur.itertuples(index=False), start=5):
+                    row_dict = row._asdict()
+                    bank_name = row_dict.get("bank", "")
+                    opening = row_dict.get("opening_balance", 0)
+                    closing = row_dict.get("closing_balance", 0)
+
+                    ws.cell(row=r_idx, column=col_offset, value=bank_name)
+                    ws.cell(row=r_idx, column=col_offset + 1, value=opening)
+                    ws.cell(row=r_idx, column=col_offset + 2, value=closing)
+
+                    # Apply formatting and borders
+                    for j in range(3):
+                        cell = ws.cell(row=r_idx, column=col_offset + j)
+                        cell.border = thin_border
+                        if j > 0:
+                            cell.number_format = formats['number']
+                            cell.alignment = Alignment(horizontal="right")
+
+            # === Add Bank Consolidated Summary (KES) on the same sheet ===
+            consolidated_start_row = ws.max_row + 3
+            
+            # Consolidated Summary Header
+            ws.merge_cells(
+                start_row=consolidated_start_row,
+                start_column=1,
+                end_row=consolidated_start_row,
+                end_column=5
+            )
+            ws.cell(row=consolidated_start_row, column=1, value="BANK CONSOLIDATED SUMMARY (KES)").font = Font(bold=True, size=12)
+            
+            # Consolidated Summary Column Headers
+            consolidated_headers = ["BANK", "OPENING BALANCE (KES)", "CLOSING BALANCE (KES)", "CHANGE (KES)", "GROWTH %"]
+            for j, header in enumerate(consolidated_headers):
+                cell = ws.cell(row=consolidated_start_row + 1, column=j + 1, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal="center")
+
+            # Consolidated Summary Data
+            for r_idx, row in enumerate(bank_summary_kes.itertuples(index=False), start=consolidated_start_row + 2):
+                bank_name = row.bank_clean
+                opening_kes = row.opening_balance_KES
+                closing_kes = row.closing_balance_KES
+                change_kes = closing_kes - opening_kes
+                growth_pct = (change_kes / opening_kes * 100) if opening_kes != 0 else 0
+
+                # Write data
+                ws.cell(row=r_idx, column=1, value=bank_name)
+                ws.cell(row=r_idx, column=2, value=opening_kes)
+                ws.cell(row=r_idx, column=3, value=closing_kes)
+                ws.cell(row=r_idx, column=4, value=change_kes)
+                ws.cell(row=r_idx, column=5, value=growth_pct)
+
+                # Apply formatting
+                for c in range(1, 6):
+                    cell = ws.cell(row=r_idx, column=c)
+                    cell.border = thin_border
+                    
+                    if c in [2, 3, 4]:  # Currency columns
+                        cell.number_format = formats['kes_currency']
+                        cell.alignment = Alignment(horizontal="right")
+                    elif c == 5:  # Percentage column
+                        cell.number_format = "0.00%"
+                        cell.alignment = Alignment(horizontal="right")
+                    
+                    # Highlight top 3 banks
+                    if bank_name in top_bank_names:
+                        if bank_name == top_bank_names[0]:  # Top bank - green
+                            cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                        else:  # Other top 3 banks - blue
+                            cell.fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+
+            # === Totals Section (after consolidated summary) ===
+            total_row_start = ws.max_row + 2
+            
+            # Add exchange rate info
+            if exchange_rates:
+                # Show rates for conversion to KES (more relevant for the report)
+                rate_display = []
+                for curr in ['USD', 'EUR', 'GBP', 'CNY', 'ZAR']:
+                    if curr in exchange_rates and curr != "KES":
+                        rate_display.append(f"1 {curr} = {exchange_rates[curr]:.2f} KES")
+                
+                if rate_display:
+                    ws.merge_cells(
+                        start_row=total_row_start,
+                        start_column=1,
+                        end_row=total_row_start,
+                        end_column=6
+                    )
+                    rate_text = "Exchange Rates (to KES): " + " | ".join(rate_display)
+                    ws.cell(row=total_row_start, column=1, value=rate_text).font = Font(italic=True, size=9)
+                    total_row_start += 1
+
+            ws.merge_cells(
+                start_row=total_row_start,
+                start_column=1,
+                end_row=total_row_start,
+                end_column=6
+            )
+            ws.cell(row=total_row_start, column=1, value="TOTALS BY CURRENCY").font = Font(bold=True, size=12)
+
+            # Totals headers - expanded to include KES columns
+            totals_headers = ["CURRENCY", "OPENING TOTAL", "CLOSING TOTAL"]
+            if 'opening_balance_kes' in currency_summary.columns:
+                totals_headers.extend(["OPENING (KES)", "CLOSING (KES)"])
+
+            for j, header in enumerate(totals_headers):
+                cell = ws.cell(row=total_row_start + 1, column=j + 1, value=header)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal="center")
+
+            # Totals data
+            for r_idx, row in enumerate(currency_summary.itertuples(index=False), start=total_row_start + 2):
+                row_dict = row._asdict()
+                currency = row_dict.get("currency", "")
+                opening_total = row_dict.get("opening_balance", 0)
+                closing_total = row_dict.get("closing_balance", 0)
+
+                ws.cell(row=r_idx, column=1, value=currency)
+                ws.cell(row=r_idx, column=2, value=opening_total)
+                ws.cell(row=r_idx, column=3, value=closing_total)
+
+                # Add KES conversion values if available
+                col_offset = 3
+                if 'opening_balance_kes' in currency_summary.columns:
+                    opening_kes = row_dict.get("opening_balance_kes", 0)
+                    closing_kes = row_dict.get("closing_balance_kes", 0)
+                    
+                    ws.cell(row=r_idx, column=4, value=opening_kes)
+                    ws.cell(row=r_idx, column=5, value=closing_kes)
+                    col_offset = 5
+
+                # Apply formatting and borders
+                for c in range(1, col_offset + 1):
+                    cell = ws.cell(row=r_idx, column=c)
+                    cell.border = thin_border
+                    if c > 1:  # All columns except currency
+                        if c >= 4:  # KES conversion columns
+                            cell.number_format = formats['kes_currency']
+                        else:  # Original currency columns
+                            cell.number_format = formats['number']
+                        cell.alignment = Alignment(horizontal="right")
+
+                # Highlight grand total row
+                if currency == "GRAND TOTAL":
+                    for c in range(1, col_offset + 1):
+                        cell = ws.cell(row=r_idx, column=c)
+                        cell.font = formats['grand_total']
+                        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+
+            # --- Auto column width ---
+            for i, col_cells in enumerate(ws.columns, start=1):
+                max_length = 0
+                col_letter = get_column_letter(i)
+                for cell in col_cells:
+                    try:
+                        if cell.value is not None:
+                            max_length = max(max_length, len(str(cell.value)))
+                    except Exception:
+                        continue
+                ws.column_dimensions[col_letter].width = max_length + 3
+
+            # --- Save to in-memory stream ---
+            wb.save(excel_buffer)
+            excel_buffer.seek(0)
+
+            # --- Streamlit download button ---
+            st.download_button(
+                label="⬇️ Download Cash Summary Excel Report",
+                data=excel_buffer,
+                file_name=f"Cash_Summary_{report_date.replace(' ', '_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            # --- Display summary in Streamlit ---
+            st.success("✅ Cash summary report generated successfully!")
+            
+            # Show the currency summary table
+            st.subheader("Currency Summary")
+            display_summary = currency_summary.copy()
+            if 'opening_balance_kes' in display_summary.columns:
+                # Format for display
+                for col in ['opening_balance', 'closing_balance', 'opening_balance_kes', 'closing_balance_kes']:
+                    if col in display_summary.columns:
+                        display_summary[col] = display_summary[col].apply(lambda x: f"{x:,.2f}")
+            
+            st.dataframe(display_summary, use_container_width=True)
+
+            # Display Bank Consolidated Summary
+            st.subheader("Bank Consolidated Summary (KES)")
+            display_bank_summary = bank_summary_kes.copy()
+            display_bank_summary["change_KES"] = display_bank_summary["closing_balance_KES"] - display_bank_summary["opening_balance_KES"]
+            display_bank_summary["growth_%"] = (
+                (display_bank_summary["change_KES"] / display_bank_summary["opening_balance_KES"].replace(0, float("nan"))) * 100
+            )
+            
+            # Format for display
+            for col in ['opening_balance_KES', 'closing_balance_KES', 'change_KES']:
+                display_bank_summary[col] = display_bank_summary[col].apply(lambda x: f"KSh{x:,.2f}")
+            display_bank_summary["growth_%"] = display_bank_summary["growth_%"].apply(lambda x: f"{x:.2f}%")
+            
+            st.dataframe(display_bank_summary, use_container_width=True)
+
+# Example usage in your Streamlit app:
+# generate_cash_summary_report(per_bank_df)
 
 st.set_page_config(page_title="Finance(FX) Reconciliation Dashboard", layout="wide")
 
@@ -288,14 +831,6 @@ if page_selection == "Bank Statement Management":
     st.session_state.bank_dfs = {}
     st.session_state.merged_bank_statement = pd.DataFrame()
 
-    # for file_name in files_to_delete:
-    #     st.session_state.cached_bank_files.pop(file_name, None)
-    #     file_key = file_name.lower().replace('.', '_')
-    #     st.session_state.raw_bank_data_previews.pop(file_key, None)
-    #     st.success(f"File '{file_name}' and its data have been removed.")
-
-    # st.session_state.bank_dfs = {}
-    # st.session_state.merged_bank_statement = pd.DataFrame()
 
     if st.button("Process All Bank Statements", key="process_all_bank_btn_main"):
         st.session_state.bank_dfs = {}
@@ -380,15 +915,6 @@ if page_selection == "Bank Statement Management":
                 st.error(f"No valid sheets found in '{data['file_obj'].name}'")
                 all_success = False
 
-            # Combine all sheets from this file
-            # if sheet_dfs:
-            #     file_df = pd.concat(sheet_dfs, ignore_index=True)
-            #     st.session_state.bank_dfs[f"{data['file_obj'].name}_combined"] = file_df
-            #     dfs_to_concat.append(file_df)
-            # else:
-            #     st.error(f"No valid sheets found in '{data['file_obj'].name}'")
-            #     all_success = False
-
         if all_success and dfs_to_concat:
             st.session_state.merged_bank_statement = pd.concat(dfs_to_concat, ignore_index=True)
             st.write("✅ All bank statements processed and merged.")
@@ -444,7 +970,6 @@ if page_selection == "Bank Statement Management":
             st.info("⚠️ No valid files processed.")
         else: 
             st.warning("⚠️ Some files could not be processed. See messages above.")
-
         st.markdown("---")
         st.header("Merged Bank Statement for Display and Download")
         if not st.session_state.get("merged_bank_statement", pd.DataFrame()).empty:
@@ -454,7 +979,326 @@ if page_selection == "Bank Statement Management":
             st.download_button(label="⬇️ Download Merged Bank Statement as CSV", data=csv, file_name="merged_bank_statement.csv", mime="text/csv")
         else: 
             st.info("No merged bank statement available yet.")
-#---
+
+        # --- Ensure data exists ---
+        if not per_bank_df.empty:
+            generate_cash_summary_report(per_bank_df)
+            
+            # --- 🧭 Identify possible columns automatically ---
+            currency_col_candidates = ["Currency", "currency", "CURRENCY", "Curr", "curr", "Ccy"]
+            opening_col_candidates = ["Opening Balance", "opening_balance", "Open Bal", "Opening", "Opening_Balance"]
+            closing_col_candidates = ["Closing Balance", "closing_balance", "Close Bal", "Closing", "Closing_Balance"]
+
+            # Find best matches
+            currency_col = next((col for col in per_bank_df.columns if col in currency_col_candidates), None)
+            opening_col = next((col for col in per_bank_df.columns if col in opening_col_candidates), None)
+            closing_col = next((col for col in per_bank_df.columns if col in closing_col_candidates), None)
+
+            # --- Validate ---
+            if not all([currency_col, opening_col, closing_col]):
+                st.error(f"❌ Missing columns in data. Found: {list(per_bank_df.columns)}")
+            else:
+                # --- 🧩 Normalize and combine currency variants ---
+                currency_map = {
+                    "KES-SPECIAL": "KES",
+                    "USD-SPECIAL": "USD",
+                    "EUR-SPECIAL": "EUR",
+                    "GBP-SPECIAL": "GBP",
+                    "USD-DCD": "USD",
+                }
+
+                per_bank_df[currency_col] = per_bank_df[currency_col].replace(currency_map)
+
+                # --- 🧮 Recompute normalized currency summary ---
+                currency_summary = (
+                    per_bank_df.groupby(currency_col, as_index=False)
+                    .agg({
+                        opening_col: "sum",
+                        closing_col: "sum"
+                    })
+                    .rename(columns={
+                        opening_col: "opening_balance",
+                        closing_col: "closing_balance",
+                        currency_col: "currency"
+                    })
+                )
+
+                # --- Remove any "GRAND TOTAL" rows if they exist ---
+                analytics_df = currency_summary[currency_summary["currency"].str.upper() != "GRAND TOTAL"].copy()
+
+                # --- 💱 Currency Conversion (to KES equivalent) ---
+                fx_rates = {
+                    "KES": 1.0,
+                    "USD": 130.0,
+                    "EUR": 140.0,
+                    "GBP": 160.0,
+                }
+
+                analytics_df["fx_rate_to_KES"] = analytics_df["currency"].map(fx_rates).fillna(1.0)
+                analytics_df["opening_balance_KES"] = analytics_df["opening_balance"] * analytics_df["fx_rate_to_KES"]
+                analytics_df["closing_balance_KES"] = analytics_df["closing_balance"] * analytics_df["fx_rate_to_KES"]
+
+                # --- 📊 Compute difference and growth % ---
+                analytics_df["change"] = analytics_df["closing_balance"] - analytics_df["opening_balance"]
+                analytics_df["growth_%"] = (
+                    analytics_df["change"] / analytics_df["opening_balance"].replace(0, float("nan"))
+                ) * 100
+
+                # --- 🧠 Dashboard Header ---
+                st.markdown("## 📈 Cash Summary Analytics Dashboard")
+                st.markdown("""
+                This dashboard provides visual insights into **cash holdings by currency**,  
+                automatically merging related variants (e.g., `USD-DCD`, `KES-SPECIAL`)  
+                and converting totals into **KES equivalents**.
+                """)
+
+                # === 1️⃣ Currency Distribution (Closing Balances in KES) ===
+                fig1 = go.Figure(data=[
+                    go.Pie(
+                        labels=analytics_df["currency"],
+                        values=analytics_df["closing_balance_KES"],
+                        hole=0.4,
+                        textinfo="label+percent",
+                        insidetextorientation="radial"
+                    )
+                ])
+                fig1.update_layout(
+                    title_text="💰 Distribution of Cash by Currency (KES Equivalent)",
+                    showlegend=True
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+
+                st.markdown("""
+                **Insight:**  
+                - Displays **KES-equivalent distribution** of all currencies.  
+                - Combines related types (`KES-SPECIAL`, `USD-DCD`, etc.) into unified totals.  
+                - Helps gauge **FX exposure** and **cash diversification**.
+                """)
+
+                # === 2️⃣ Opening vs. Closing Balance Comparison (KES equivalent) ===
+                fig2 = go.Figure()
+                fig2.add_trace(go.Bar(
+                    x=analytics_df["currency"],
+                    y=analytics_df["opening_balance_KES"],
+                    name="Opening (KES)",
+                    marker_color="royalblue"
+                ))
+                fig2.add_trace(go.Bar(
+                    x=analytics_df["currency"],
+                    y=analytics_df["closing_balance_KES"],
+                    name="Closing (KES)",
+                    marker_color="seagreen"
+                ))
+
+                fig2.update_layout(
+                    barmode="group",
+                    title="🏦 Opening vs. Closing Balances (KES Equivalent)",
+                    xaxis_title="Currency",
+                    yaxis_title="KES Amount",
+                    legend_title="Balance Type"
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+                st.markdown("""
+                **Insight:**  
+                - Compares **opening vs. closing totals** by currency (converted to KES).  
+                - A higher closing bar indicates inflow or accumulation; a lower one signals outflow.
+                """)
+
+                # === 3️⃣ Growth or Decline Percentage ===
+                fig3 = go.Figure()
+                fig3.add_trace(go.Bar(
+                    x=analytics_df["currency"],
+                    y=analytics_df["growth_%"],
+                    text=analytics_df["growth_%"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else ""),
+                    textposition="outside",
+                    marker_color=analytics_df["growth_%"].apply(lambda x: "seagreen" if x >= 0 else "crimson")
+                ))
+                fig3.update_layout(
+                    title="📊 Growth/Decline by Currency (%)",
+                    xaxis_title="Currency",
+                    yaxis_title="Growth %",
+                    yaxis_tickformat=".1f",
+                    showlegend=False
+                )
+                st.plotly_chart(fig3, use_container_width=True)
+
+                st.markdown("""
+                **Insight:**  
+                - Green = Growth, Red = Decline.  
+                - Useful for identifying strong or weakening currency segments in your portfolio.
+                """)
+
+                # === 4️⃣ Detailed Summary Table ===
+                st.markdown("### 📋 Detailed Currency Performance Summary")
+                st.dataframe(
+                    analytics_df[[
+                        "currency",
+                        "opening_balance",
+                        "closing_balance",
+                        "opening_balance_KES",
+                        "closing_balance_KES",
+                        "change",
+                        "growth_%"
+                    ]]
+                    .style.format({
+                        "opening_balance": "₤{:,.2f}".format,
+                        "closing_balance": "₤{:,.2f}".format,
+                        "opening_balance_KES": "KSh{:,.2f}".format,
+                        "closing_balance_KES": "KSh{:,.2f}".format,
+                        "change": "₤{:,.2f}".format,
+                        "growth_%": "{:.2f}%".format,
+                    })
+                    .applymap(lambda v: "color: green" if isinstance(v, (int, float)) and v > 0 else ("color: red" if isinstance(v, (int, float)) and v < 0 else ""))
+                )
+
+                st.markdown("""
+                **Interpretation:**  
+                - Includes both **native** and **KES-converted** values.  
+                - `Change` and `Growth %` show absolute and relative performance.  
+                - Use to track liquidity and FX movement over time.
+                """)
+
+                        # === 🏦 True Bank-Level Consolidated Summary (KES Equivalent) ===
+            st.markdown("## 🏦 Bank Consolidated Summary (All Currencies Combined to KES)")
+
+            bank_col_candidates = ["Bank", "bank", "BANK"]
+            bank_col = next((col for col in per_bank_df.columns if col in bank_col_candidates), None)
+
+            if not bank_col:
+                st.warning("⚠️ 'Bank' column not found for consolidated bank summary.")
+            else:
+                bank_summary_df = per_bank_df.copy()
+
+                # --- Normalize currency variants ---
+                currency_map = {
+                    "KES-SPECIAL": "KES",
+                    "USD-SPECIAL": "USD",
+                    "EUR-SPECIAL": "EUR",
+                    "GBP-SPECIAL": "GBP",
+                    "USD-DCD": "USD",
+                }
+                bank_summary_df["currency"] = bank_summary_df["currency"].replace(currency_map)
+
+                # --- Ensure consistent FX rates ---
+                if "fx_rates" not in locals():
+                    fx_rates = {
+                        "KES": 1.0,
+                        "USD": 130.0,
+                        "EUR": 140.0,
+                        "GBP": 160.0,
+                    }
+
+                # --- Derive true bank name (strip currency suffixes) ---
+                # Examples: "NCBA USD" → "NCBA", "ABSA KES" → "ABSA"
+                bank_summary_df["bank_clean"] = (
+                    bank_summary_df[bank_col]
+                    .astype(str)
+                    .str.replace(r"\b(USD|EUR|GBP|KES|CNY|ZAR|TZS|UGX|RWF)\b", "", regex=True)
+                    .str.replace(r"[-_/]+$", "", regex=True)
+                    .str.strip()
+                )
+
+                # --- Convert all balances to KES equivalent ---
+                bank_summary_df["fx_rate_to_KES"] = bank_summary_df["currency"].map(fx_rates).fillna(1.0)
+                bank_summary_df["opening_balance_KES"] = bank_summary_df["opening_balance"] * bank_summary_df["fx_rate_to_KES"]
+                bank_summary_df["closing_balance_KES"] = bank_summary_df["closing_balance"] * bank_summary_df["fx_rate_to_KES"]
+
+                # --- Consolidate by clean bank name ---
+                bank_summary_kes = (
+                    bank_summary_df.groupby("bank_clean", as_index=False)[["opening_balance_KES", "closing_balance_KES"]]
+                    .sum()
+                    .sort_values("closing_balance_KES", ascending=False)
+                )
+
+                # --- Compute growth and change ---
+                bank_summary_kes["change_KES"] = bank_summary_kes["closing_balance_KES"] - bank_summary_kes["opening_balance_KES"]
+                bank_summary_kes["growth_%"] = (
+                    (bank_summary_kes["change_KES"] / bank_summary_kes["opening_balance_KES"].replace(0, float("nan"))) * 100
+                )
+
+                # === 🧭 Visual 1: Total Cash Distribution by Bank ===
+                fig_bank_dist = go.Figure(data=[
+                    go.Pie(
+                        labels=bank_summary_kes["bank_clean"],
+                        values=bank_summary_kes["closing_balance_KES"],
+                        hole=0.4,
+                        textinfo="label+percent",
+                        insidetextorientation="radial"
+                    )
+                ])
+                fig_bank_dist.update_layout(
+                    title_text="🏦 Total Cash Distribution by Bank (KES Equivalent)",
+                    showlegend=True
+                )
+                st.plotly_chart(fig_bank_dist, use_container_width=True)
+
+                st.markdown("""
+                **Insight:**  
+                - Each bank combines **all its currency accounts** into one total (in KES).  
+                - Helps you see **total exposure per bank**, not per currency account.
+                """)
+
+                # === 🧭 Visual 2: Opening vs Closing per Bank ===
+                fig_bank_balances = go.Figure()
+                fig_bank_balances.add_trace(go.Bar(
+                    x=bank_summary_kes["bank_clean"],
+                    y=bank_summary_kes["opening_balance_KES"],
+                    name="Opening (KES)",
+                    marker_color="royalblue"
+                ))
+                fig_bank_balances.add_trace(go.Bar(
+                    x=bank_summary_kes["bank_clean"],
+                    y=bank_summary_kes["closing_balance_KES"],
+                    name="Closing (KES)",
+                    marker_color="seagreen"
+                ))
+                fig_bank_balances.update_layout(
+                    barmode="group",
+                    title="🏦 Opening vs. Closing Balances by Bank (KES Equivalent)",
+                    xaxis_title="Bank",
+                    yaxis_title="KES Amount",
+                    legend_title="Balance Type"
+                )
+                st.plotly_chart(fig_bank_balances, use_container_width=True)
+
+                # === 🧭 Visual 3: Growth or Decline % by Bank ===
+                fig_bank_growth = go.Figure()
+                fig_bank_growth.add_trace(go.Bar(
+                    x=bank_summary_kes["bank_clean"],
+                    y=bank_summary_kes["growth_%"],
+                    text=bank_summary_kes["growth_%"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else ""),
+                    textposition="outside",
+                    marker_color=bank_summary_kes["growth_%"].apply(lambda x: "seagreen" if x >= 0 else "crimson")
+                ))
+                fig_bank_growth.update_layout(
+                    title="📊 Growth/Decline by Bank (%)",
+                    xaxis_title="Bank",
+                    yaxis_title="Growth %",
+                    yaxis_tickformat=".1f",
+                    showlegend=False
+                )
+                st.plotly_chart(fig_bank_growth, use_container_width=True)
+
+                # === 📋 Detailed Table ===
+                st.markdown("### 📋 Detailed Bank Summary (KES Equivalent)")
+                st.dataframe(
+                    bank_summary_kes.style.format({
+                        "opening_balance_KES": "KSh{:,.2f}".format,
+                        "closing_balance_KES": "KSh{:,.2f}".format,
+                        "change_KES": "KSh{:,.2f}".format,
+                        "growth_%": "{:.2f}%".format,
+                    })
+                    .applymap(lambda v: "color: green" if isinstance(v, (int, float)) and v > 0 else ("color: red" if isinstance(v, (int, float)) and v < 0 else ""))
+                )
+
+                st.markdown("""
+                **Interpretation:**  
+                - `"bank_clean"` merges all variants (e.g. `"NCBA USD"`, `"NCBA EUR"`) into `"NCBA"`.  
+                - Balances are **converted to KES** and summed.  
+                - Growth metrics show performance across all currency accounts combined.
+                """)
+
 
 elif page_selection == "Adjacements Reconciliation":
     st.title("Local & Foreign Adjacements Reconciliation App")
