@@ -234,6 +234,7 @@ def get_excel_sheet_names(uploaded_file):
         st.error(f"Error getting Excel sheet names: {e}")
         return []
 
+
 # --- Reconciliation Logic ---
 def reconcile_adjustment_row(
     adj_row: pd.Series,
@@ -244,7 +245,8 @@ def reconcile_adjustment_row(
     debug: bool = False, # Control verbose printing
     matched_adjustments_list: list = None,
     unmatched_adjustments_list: list = None,
-    matched_bank_keys: set = None
+    matched_bank_keys: set = None,
+    already_matched_adjustments: set = None  # NEW: Track already matched adjustment IDs
 ) -> bool:
     """
     Attempts to reconcile a single adjustment row against all uploaded bank statements.
@@ -255,6 +257,17 @@ def reconcile_adjustment_row(
     """
     if matched_adjustments_list is None or unmatched_adjustments_list is None or matched_bank_keys is None:
         raise ValueError("Matched/unmatched lists and matched_bank_keys set must be provided.")
+
+    # Extract unique identifier for this adjustment
+    adjustment_id = adj_row.get('Request ID', '')  # Use Request ID as unique identifier
+    if not adjustment_id:
+        adjustment_id = f"{adj_row.get('Completed At', '')}_{adj_row.get('Amount', '')}_{adj_row.get('Intermediary Account', '')}"
+
+    # Check if this adjustment has already been matched (skip if True)
+    if already_matched_adjustments and adjustment_id in already_matched_adjustments:
+        if debug:
+            st.info(f"⏭️ Skipping already matched adjustment: {adjustment_id}")
+        return True  # Return True since it was previously matched
 
     if debug:
         st.info(f"🔍 Processing Adjustment (Amount: {adj_row.get('Amount')}, Date: {adj_row.get('Completed At')}, Bank: {adj_row.get('Intermediary Account')}, Currency: {adj_row.get('Currency')}) for mode '{mode}'")
@@ -538,8 +551,6 @@ def reconcile_adjustment_row(
             matched_adjustments_list.append(matched_record)
 
             # --- TWO-WAY: attach adjustment details to the bank row ---
-            # FIX: Use a different approach for storing matched records
-            # Instead of storing lists in dataframe cells, we'll store JSON strings
             if "Matched_Adjustment_Records" not in bank_df.columns:
                 bank_df["Matched_Adjustment_Records"] = ""
             
@@ -589,16 +600,17 @@ def reconcile_adjustment_row(
                 st.info(f"   Match Details: {match_details}")
 
             match_found = True
-            # continue searching for other potential bank matches (do NOT break),
-            # so an adjustment can be linked to multiple bank records if appropriate.
+            
+            # BREAK after first successful match to prevent multiple matches for same adjustment
+            break  # This is the key change - stop after first match
 
     # Update match counts for all matched records from this adjustment
     if match_found:
-        # Update the total_matches_for_adjustment in all match details for this adjustment
-        for match_record in matched_adjustments_list[-matches_count:]:  # Update only the recent matches
+        # Since we're only allowing one match per adjustment, total_matches_for_adjustment should be 1
+        for match_record in matched_adjustments_list[-matches_count:]:
             if 'Match_Details' in match_record:
-                match_record['Match_Details']['total_matches_for_adjustment'] = matches_count
-                match_record['Total_Matches_For_This_Adjustment'] = matches_count
+                match_record['Match_Details']['total_matches_for_adjustment'] = 1
+                match_record['Total_Matches_For_This_Adjustment'] = 1
         
         # Also update in the bank dataframe
         for idx, bank_row in date_matches_df.iterrows():
@@ -607,15 +619,20 @@ def reconcile_adjustment_row(
                     current_adj_matches = json.loads(bank_df.loc[idx, "Matched_Adjustment_Records"])
                     for adj_match in current_adj_matches:
                         if 'Match_Details' in adj_match:
-                            adj_match['Match_Details']['total_matches_for_adjustment'] = matches_count
-                        adj_match['Total_Matches_For_This_Adjustment'] = matches_count
+                            adj_match['Match_Details']['total_matches_for_adjustment'] = 1
+                        adj_match['Total_Matches_For_This_Adjustment'] = 1
                     # Update the stored JSON
                     bank_df.loc[idx, "Matched_Adjustment_Records"] = json.dumps(current_adj_matches)
                 except:
                     pass  # Skip if there's an issue parsing
 
+        # MARK THIS ADJUSTMENT AS MATCHED
+        if already_matched_adjustments is not None:
+            already_matched_adjustments.add(adjustment_id)
+            
         if debug:
-            st.info(f"📊 Adjustment matched with {matches_count} bank record(s) in total")
+            st.info(f"📊 Adjustment matched with 1 bank record")
+            st.info(f"✅ Marked adjustment {adjustment_id} as matched in tracking set")
 
     if not match_found:
         if debug:
@@ -642,7 +659,6 @@ def reconcile_adjustment_row(
         unmatched_adjustments_list.append(unmatched_record)
         
     return match_found
-
 
 def identify_unmatched_bank_records(bank_dfs: dict, matched_bank_keys: set, unmatched_bank_records_list: list, debug: bool):
     """Identifies bank records that were not matched by any adjustment."""
