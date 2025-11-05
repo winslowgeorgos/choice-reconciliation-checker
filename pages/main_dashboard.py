@@ -673,6 +673,40 @@ if 'merged_bank_statement' not in st.session_state: st.session_state.merged_bank
 if "cached_bank_files" not in st.session_state: st.session_state.cached_bank_files = {}
 page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Business FX Reconciliation", "Cross-Match Analysis"])
 
+
+# Add the detection function from your reference code
+def detect_column_type(series):
+    """
+    Detect if a pandas series contains datetime objects or strings
+    """
+    # Check if already datetime
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return 'datetime'
+    
+    # Check if numeric (not date)
+    if pd.api.types.is_numeric_dtype(series):
+        return 'numeric'
+    
+    # Try to convert sample to datetime to check if it contains dates
+    sample_size = min(100, len(series))
+    sample = series.head(sample_size).dropna()
+    
+    if len(sample) == 0:
+        return 'unknown'
+    
+    # Try parsing as datetime
+    try:
+        # Try multiple common date formats
+        test_parsed = pd.to_datetime(sample, errors='coerce')
+        success_rate = (test_parsed.notna().sum() / len(sample)) * 100
+        
+        if success_rate > 80:  # If >80% successfully parsed as dates
+            return 'date_string'
+        else:
+            return 'general_string'
+    except:
+        return 'general_string'
+
 # --- Main App Logic ---
 if page_selection == "Bank Statement Management":
     st.title("Bank Statement Management")
@@ -730,7 +764,7 @@ if page_selection == "Bank Statement Management":
                         'file_obj': fake_file, 
                         'df_raw_dict': df_dict, 
                         'sheet_names': sheet_names,
-                        'selected_sheets': selected_sheets,  # Correct key name
+                        'selected_sheets': selected_sheets,
                         'column_mappings': {}, 
                         'standardized_names': standardized_names
                     }
@@ -739,29 +773,24 @@ if page_selection == "Bank Statement Management":
                 df_bank_raw_dict = data['df_raw_dict']
 
                 if file_name.endswith('.xlsx') and data['sheet_names']:
-                    # Multi-select for sheets - FIXED VERSION
                     current_sheets = st.multiselect(
                         f"Select Sheets for {file_name}:", 
                         data['sheet_names'],
-                        default=data['selected_sheets'],  # Use the correct key
+                        default=data['selected_sheets'],
                         key=f"bank_sheet_selector_{file_key}"
                     )
                     
-                    # Check if sheet selection changed
                     if set(current_sheets) != set(data['selected_sheets']):
                         data['selected_sheets'] = current_sheets
                         if current_sheets:
                             fake_file = BytesIO(file_data["content"])
                             fake_file.name = file_name
                             dfs = process_uploaded_file(fake_file, sheet_name=current_sheets)
-                            # Ensure we have a dictionary of DataFrames
                             df_bank_raw_dict = dfs if isinstance(dfs, dict) else {current_sheets[0]: dfs}
-                            # Clean column names for each sheet
                             for sheet_name, df in df_bank_raw_dict.items():
                                 if df is not None:
                                     df.columns = df.columns.str.strip()
                             
-                            # Initialize standardized names for newly selected sheets
                             for sheet_name in df_bank_raw_dict.keys():
                                 if sheet_name not in data['standardized_names']:
                                     data['standardized_names'][sheet_name] = ""
@@ -778,6 +807,64 @@ if page_selection == "Bank Statement Management":
                             st.markdown(f"---")
                             st.subheader(f"Sheet: {sheet_name}")
                             
+                            # Process datetime columns for this sheet
+                            if sheet_name in data['df_raw_dict']:
+                                df_processed = data['df_raw_dict'][sheet_name].copy()
+                                conversion_log = []
+                                
+                                # Process each column for datetime conversion
+                                for col in df_processed.columns:
+                                    # Detect column type using the reference logic
+                                    col_type = detect_column_type(df_processed[col])
+                                    
+                                    if col_type in ['datetime', 'date_string']:
+                                        # Convert datetime columns
+                                        try:
+                                            # Store original for comparison
+                                            original_sample = df_processed[col].head(3).tolist()
+                                            
+                                            # Convert to datetime
+                                            df_processed[col] = pd.to_datetime(
+                                                df_processed[col], 
+                                                errors='coerce'
+                                            )
+                                            
+                                            # Count successful conversions
+                                            successful_conversions = df_processed[col].notna().sum()
+                                            total_rows = len(df_processed)
+                                            
+                                            if successful_conversions > 0:
+                                                # Format as mm/dd/yyyy for display (month/day/year)
+                                                df_processed[col] = df_processed[col].dt.strftime('%m/%d/%Y')
+                                                conversion_log.append(f"✅ **{col}**: Converted {successful_conversions}/{total_rows} dates to mm/dd/yyyy")
+                                                
+                                                # Show before/after sample
+                                                with st.expander(f"Show conversion samples for '{col}'"):
+                                                    st.write("**Before:**", original_sample)
+                                                    st.write("**After:**", df_processed[col].head(3).tolist())
+                                            else:
+                                                conversion_log.append(f"❌ **{col}**: No dates successfully converted")
+                                                # Revert to original if conversion failed
+                                                df_processed[col] = data['df_raw_dict'][sheet_name][col]
+                                                
+                                        except Exception as e:
+                                            conversion_log.append(f"❌ **{col}**: Error - {str(e)}")
+                                            # Revert to original on error
+                                            df_processed[col] = data['df_raw_dict'][sheet_name][col]
+                                    elif col_type == 'general_string':
+                                        conversion_log.append(f"ℹ️ **{col}**: General text (no conversion needed)")
+                                    elif col_type == 'numeric':
+                                        conversion_log.append(f"ℹ️ **{col}**: Numeric data (no conversion needed)")
+                                
+                                # Update the dataframe in the dictionary
+                                data['df_raw_dict'][sheet_name] = df_processed
+                                
+                                # Show conversion summary
+                                if conversion_log:
+                                    with st.expander("Date Conversion Summary"):
+                                        for log_entry in conversion_log:
+                                            st.write(log_entry)
+                            
                             # Standardized name selector for this specific sheet
                             selected_standardized_name = st.selectbox(
                                 f"Select Standardized Name for '{sheet_name}':", 
@@ -789,9 +876,11 @@ if page_selection == "Bank Statement Management":
                             data['standardized_names'][sheet_name] = selected_standardized_name
 
                             st.write(f"**Preview - {sheet_name}:**")
-                            st.dataframe(df_bank_raw.head())
+                            # Use the processed dataframe for display
+                            display_df = data['df_raw_dict'][sheet_name]
+                            st.dataframe(display_df.head())
 
-                            available_columns = df_bank_raw.columns.tolist()
+                            available_columns = display_df.columns.tolist()
                             available_columns.insert(0, "")
                             # Initialize column mappings for this sheet if it doesn't exist
                             if sheet_name not in data['column_mappings']:
@@ -804,7 +893,7 @@ if page_selection == "Bank Statement Management":
                                 initial_selection = current_mappings.get(expected_col)
                                 if not initial_selection:
                                     for default_val in default_val_list:
-                                        if default_val.strip() in [col.strip() for col in df_bank_raw.columns]:
+                                        if default_val.strip() in [col.strip() for col in display_df.columns]:
                                             initial_selection = default_val
                                             break
                                 
@@ -832,6 +921,8 @@ if page_selection == "Bank Statement Management":
     st.session_state.merged_bank_statement = pd.DataFrame()
 
 
+
+#------------------------------------------------------
     if st.button("Process All Bank Statements", key="process_all_bank_btn_main"):
         st.session_state.bank_dfs = {}
         all_success = True
