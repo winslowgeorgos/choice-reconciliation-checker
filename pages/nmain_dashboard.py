@@ -817,7 +817,9 @@ if page_selection == "Bank Statement Management":
                                     # Detect column type using the reference logic
                                     col_type = detect_column_type(df_processed[col])
                                     
+                                    # if col_type in ['datetime', 'date_string']:
                                     if col_type in ['datetime', 'date_string']:
+
                                         # Convert datetime columns
                                         try:
                                             # Store original for comparison

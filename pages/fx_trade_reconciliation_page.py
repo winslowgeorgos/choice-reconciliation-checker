@@ -7,6 +7,7 @@ from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
 
 import os
 import pickle
@@ -290,7 +291,11 @@ def parse_date(date_str_raw):
             continue
     return None
 
+
+#--- Main Application Function ---
+
 # --- Core Matching Logic ---
+
 # --- Core Matching Logic ---
 def process_fx_match(
     fx_row: pd.Series,
@@ -301,9 +306,31 @@ def process_fx_match(
     fx_amount_field: str,
     bank_currency_info_field: str,
     date_tolerance_days: int = 3,
-    debug_mode: bool = False
+    debug_mode: bool = False,
+    already_matched_fx_trades: set = None,
+    skipped_bank_records: dict = None,
+    matched_bank_keys: set = None
 ) -> list or None:
     """Matches one FX trade against all potential bank statement records (can be multiple)."""
+
+    # Initialize tracking sets if not provided
+    if already_matched_fx_trades is None:
+        already_matched_fx_trades = set()
+    if skipped_bank_records is None:
+        skipped_bank_records = {}
+    if matched_bank_keys is None:
+        matched_bank_keys = set()
+
+    # Extract unique identifier for this FX trade
+    fx_trade_id = fx_row.get('Trade ID', '')
+    if not fx_trade_id:
+        fx_trade_id = f"{fx_row.get('Created At', '')}_{fx_row.get(fx_amount_field, '')}_{fx_row.get(bank_currency_info_field, '')}"
+
+    # Check if this FX trade has already been matched
+    if fx_trade_id in already_matched_fx_trades:
+        if debug_mode:
+            st.info(f"⏭️  Skipping already matched FX trade: {fx_trade_id}")
+        return None
 
     amount = safe_float(fx_row.get(fx_amount_field))
     if amount is None or action_type not in ['Bank Buy', 'Bank Sell']:
@@ -324,11 +351,12 @@ def process_fx_match(
         'Vendor ID': fx_row.get('Vendor ID'),
         'Vendor Name': fx_row.get('Vendor Name'),
         'Counterparty Dealer': fx_row.get('Counterparty Dealer'),
-        'FX Trade ID': fx_row.get('Trade ID'),  # Add if available
-        'FX Reference': fx_row.get('Reference'),  # Add if available
+        'FX Trade ID': fx_trade_id,
+        'FX Reference': fx_row.get('Reference'),
         'FX Created At': parsed_date.strftime('%Y-%m-%d') if parsed_date else None,
         'FX Amount': amount,
-        'Source Column': bank_currency_info_field
+        'Source Column': bank_currency_info_field,
+        'Action Type': action_type
     }
 
     counterparty_raw = str(fx_row.get(bank_currency_info_field, '')).strip()
@@ -366,6 +394,10 @@ def process_fx_match(
     bank_df_columns = bank_df.columns.tolist()
     bank_currency = expected_bank_key.split(' ')[1].upper() if ' ' in expected_bank_key else "UNKNOWN"
 
+    # NEW: Initialize Skipped column if not exists
+    if 'Skipped_By_FX_Trades' not in bank_df.columns:
+        bank_df['Skipped_By_FX_Trades'] = ""
+
     date_column = 'Date'
     amount_column = resolve_amount_column(bank_df_columns, action_type, bank_currency)
     if date_column not in bank_df.columns or not amount_column or amount_column not in bank_df.columns:
@@ -389,6 +421,7 @@ def process_fx_match(
     ]
 
     matched_records = []
+    skipped_records = []  # NEW: Track skipped bank records
 
     for idx, bank_row in date_matches.iterrows():
         bank_amt = safe_float(bank_row.get(amount_column))
@@ -399,6 +432,72 @@ def process_fx_match(
         amount_diff = abs(bank_amt - converted_amount) if converted_amount is not None else float('inf')
 
         if converted_amount and abs(converted_amount) > 0.01 and amount_diff < 0.05:
+            # Create bank record key for tracking
+            bank_record_key_operation = 'debit' if 'debit' in amount_column.lower() or bank_amt < 0 else 'credit'
+            if 'credit' in amount_column.lower():
+                bank_record_key_operation = 'credit'
+            
+            bank_record_key = (
+                expected_bank_key,
+                bank_row[date_column].strftime('%Y-%m-%d') if hasattr(bank_row[date_column], 'strftime') else str(bank_row[date_column]),
+                round(bank_amt, 2),
+                bank_record_key_operation
+            )
+
+            # Check if this bank record is already matched
+            is_already_matched = bank_record_key in matched_bank_keys
+
+            if is_already_matched:
+                # Mark as skipped
+                if debug_mode:
+                    st.warning(f"⚠️ Bank record {bank_record_key} already matched, marking as skipped for FX trade {fx_trade_id}")
+                
+                # Mark this bank record as skipped by this FX trade
+                current_skipped = bank_df.loc[idx, "Skipped_By_FX_Trades"]
+                skipped_list = []
+                if current_skipped and current_skipped != "":
+                    try:
+                        skipped_list = json.loads(current_skipped)
+                    except:
+                        skipped_list = []
+                
+                # Add FX trade to skipped list
+                skipped_info = {
+                    'fx_trade_id': fx_trade_id,
+                    'fx_date': parsed_date.strftime('%Y-%m-%d'),
+                    'fx_amount': amount,
+                    'fx_action_type': action_type,
+                    'skipped_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'match_details': {
+                        'amount_difference': amount_diff,
+                        'converted_amount': converted_amount,
+                        'bank_amount': bank_amt,
+                        'amount_column': amount_column
+                    }
+                }
+                skipped_list.append(skipped_info)
+                bank_df.loc[idx, "Skipped_By_FX_Trades"] = json.dumps(skipped_list)
+                
+                # Track in skipped_bank_records
+                if fx_trade_id not in skipped_bank_records:
+                    skipped_bank_records[fx_trade_id] = []
+                skipped_records.append({
+                    'bank_key': bank_record_key,
+                    'bank_table': expected_bank_key,
+                    'bank_date': bank_row[date_column].strftime('%Y-%m-%d') if hasattr(bank_row[date_column], 'strftime') else str(bank_row[date_column]),
+                    'bank_amount': bank_amt,
+                    'bank_row_index': idx,
+                    'match_details': {
+                        'amount_difference': amount_diff,
+                        'converted_amount': converted_amount,
+                        'bank_amount': bank_amt,
+                        'amount_column': amount_column
+                    }
+                })
+                
+                continue  # Skip to next potential match
+
+            # If we get here, this is a valid unmatched bank record - proceed with matching
             matched_records.append({
                 'Bank Index': idx,
                 'Bank Date': bank_row.get(date_column).strftime('%Y-%m-%d') if bank_row.get(date_column) else None,
@@ -406,15 +505,25 @@ def process_fx_match(
                 'Debit': safe_float(bank_row.get('Debit')),
                 'Credit': safe_float(bank_row.get('Credit')),
                 'Matched Column': amount_column,
-                'Bank Amount': bank_amt
+                'Bank Amount': bank_amt,
+                'Bank Record Key': bank_record_key,  # NEW: Store for tracking
+                'Amount Difference': amount_diff,
+                'Converted Amount': converted_amount
             })
+
+            # Mark bank record as matched
             bank_df.at[idx, "Matched"] = True
+            matched_bank_keys.add(bank_record_key)
 
             if debug_mode:
                 st.info(f"✅ Sub-Match Found: Bank[{idx}] {bank_amt:.2f} {bank_currency} "
                         f"≈ FX {amount:.2f} {trade_currency} (Converted {converted_amount:.2f})")
 
     if matched_records:
+        # Convert complex objects to JSON strings for PyArrow compatibility
+        all_matched_records_json = json.dumps(matched_records) if matched_records else ""
+        skipped_records_json = json.dumps(skipped_records) if skipped_records else ""
+
         # Create base matched record with all FX details
         matched_record = {
             'Date': parsed_date.strftime('%Y-%m-%d'),
@@ -425,6 +534,7 @@ def process_fx_match(
             'Bank Statement Currency': bank_currency,
             'Converted Trade Amount': converted_amount,
             'Total Bank Matches': len(matched_records),
+            'Skipped Bank Records': len(skipped_records),  # NEW: Track skipped count
 
             # Flattened first match (for CSV friendliness)
             'Matched Bank Record Index': matched_records[0]['Bank Index'],
@@ -433,8 +543,11 @@ def process_fx_match(
             'Matched Bank Debit': matched_records[0]['Debit'],
             'Matched Bank Credit': matched_records[0]['Credit'],
 
-            # JSON for full list of all matches
-            'All Matched Bank Records': matched_records,
+            # JSON strings for complex objects (PyArrow compatible)
+            'All Matched Bank Records': all_matched_records_json,
+            
+            # NEW: Include skipped records info as JSON string
+            'Skipped Bank Records Info': skipped_records_json,
             
             # Add all FX row details
             **fx_details
@@ -442,11 +555,35 @@ def process_fx_match(
 
         matched_list.append(matched_record)
 
+        # MARK THIS FX TRADE AS MATCHED
+        already_matched_fx_trades.add(fx_trade_id)
+
         if debug_mode:
-            st.success(f"✅ FX {amount:.2f} {trade_currency} matched {len(matched_records)} bank entries in '{expected_bank_key}'.")
+            st.success(f"✅ FX {amount:.2f} {trade_currency} matched {len(matched_records)} bank entries in '{expected_bank_key}' (skipped: {len(skipped_records)}).")
+
         return [(expected_bank_key, m['Bank Index']) for m in matched_records]
 
-    # If none matched
+    # If none matched but there were skipped records
+    if skipped_records:
+        # Convert skipped records to JSON string
+        skipped_records_json = json.dumps(skipped_records) if skipped_records else ""
+        
+        unmatched_record = {
+            'Date': parsed_date.strftime('%Y-%m-%d'),
+            'Bank Table (Expected)': expected_bank_key,
+            'Action Type': action_type,
+            'Amount': amount,
+            'Status': f'Potential matches found but already taken by other trades (skipped: {len(skipped_records)})',
+            'Skipped Bank Records': skipped_records_json,  # NEW: Include skipped records details as JSON
+            **fx_details  # Include all FX details
+        }
+        unmatched_list.append(unmatched_record)
+
+        if debug_mode:
+            st.warning(f"⚠️ FX {amount:.2f} {trade_currency} had {len(skipped_records)} potential matches but all were already taken in {expected_bank_key}.")
+        return None
+
+    # If none matched and no skipped records
     unmatched_record = {
         'Date': parsed_date.strftime('%Y-%m-%d'),
         'Bank Table (Expected)': expected_bank_key,
