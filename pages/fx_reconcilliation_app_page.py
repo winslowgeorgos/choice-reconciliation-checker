@@ -1255,7 +1255,6 @@ def identify_unmatched_bank_records(bank_dfs: dict, matched_bank_keys: set, unma
                 f"{' Description' if not description_col else ''}".rstrip(',')
             )
             continue
-        st.dataframe(bank_df_copy)
 
         # _ParsedDate should already exist from main_dashboard preprocessing
         if '_ParsedDate' not in bank_df_copy.columns:
