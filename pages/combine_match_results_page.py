@@ -13,13 +13,15 @@ st.session_state.still_unmatched_adjustments_df  = pd.DataFrame()
 st.session_state.combined_unmatched_bank_records_df  = pd.DataFrame()
 st.session_state.unique_still_unmatched_bank_records_df = pd.DataFrame()
 
+
 def run_cross_match_analysis(
     df_matched_adjustments_local: pd.DataFrame,
     df_matched_adjustments_foreign: pd.DataFrame,
     df_matched_counterparty: pd.DataFrame,
     df_matched_choice: pd.DataFrame,
-    df_matched_intermediary_credit: pd.DataFrame,  # NEW
-    df_matched_intermediary_debit: pd.DataFrame,   # NEW
+    df_matched_intermediary_credit: pd.DataFrame,
+    df_matched_intermediary_debit: pd.DataFrame,
+    df_matched_interfund: pd.DataFrame,  # NEW: Add interfund matches
     df_bank_dfs: dict,
     debug_mode: bool = False
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -170,12 +172,19 @@ def run_cross_match_analysis(
 
     # --- Step 3: Prepare Matched Data Sources ---
     # Debug information about matched data sources
-    if debug_mode:
-        st.write("DEBUG: Matched data sources information:")
-        st.write(f"  - Local Adjustments: {len(df_matched_adjustments_local)} records")
-        st.write(f"  - Foreign Adjustments: {len(df_matched_adjustments_foreign)} records")
-        st.write(f"  - Counterparty Trades: {len(df_matched_counterparty)} records")
-        st.write(f"  - Choice Trades: {len(df_matched_choice)} records")
+        if debug_mode:
+            st.write("DEBUG: Matched data sources information:")
+            st.write(f"  - Local Adjustments: {len(df_matched_adjustments_local)} records")
+            st.write(f"  - Foreign Adjustments: {len(df_matched_adjustments_foreign)} records")
+            st.write(f"  - Counterparty Trades: {len(df_matched_counterparty)} records")
+            st.write(f"  - Choice Trades: {len(df_matched_choice)} records")
+            st.write(f"  - Intermediary Credit: {len(df_matched_intermediary_credit)} records")
+            st.write(f"  - Intermediary Debit: {len(df_matched_intermediary_debit)} records")
+            st.write(f"  - Interfund: {len(df_matched_interfund)} records")  # NEW
+        
+        if not df_matched_interfund.empty:
+            st.write(f"DEBUG: Interfund columns: {list(df_matched_interfund.columns)}")
+            st.write(f"DEBUG: Interfund sample: {df_matched_interfund.head(1).to_dict('records')}")
         
         if not df_matched_counterparty.empty:
             st.write(f"DEBUG: Counterparty columns: {list(df_matched_counterparty.columns)}")
@@ -790,6 +799,61 @@ def run_cross_match_analysis(
 
 # ADD NEW MATCHING FUNCTIONS FOR INTERMEDIARY BANK RECONCILIATION:
 
+    # Add this function after the intermediary matching functions
+
+    def match_interfund(bank_row: pd.Series, matched_df: pd.DataFrame, already_matched_indices: set = None) -> Dict[str, Any]:
+        """Match bank records with interfund records"""
+        if already_matched_indices is None:
+            already_matched_indices = set()
+            
+        matches_found = []
+        for interfund_index, interfund_row in matched_df.iterrows():
+            # Skip if this interfund record was already matched
+            if interfund_index in already_matched_indices:
+                continue
+                
+            try:
+                # Bank table matching
+                interfund_bank_table = str(interfund_row.get('Bank_Table', interfund_row.get('Bank Table', '')))
+                if interfund_bank_table.lower() != str(bank_row['Bank']).lower():
+                    continue
+                
+                # Amount matching - Interfund matches with Debit column in bank (per rules)
+                interfund_amount = float(interfund_row.get('Interfund Amount', interfund_row.get('Amount', 0)))
+                
+                # Interfund always matches with bank's Debit column (absolute values)
+                if abs(abs(bank_row['Debit']) - abs(interfund_amount)) < 0.01:
+                    matches_found.append({
+                        'matched': True,
+                        'source': 'Interfund',
+                        'matched_index': interfund_index,
+                        'match_reason': f"Debit amount {interfund_amount} matches with Interfund",
+                        'confidence': 'high'
+                    })
+                    # Mark this interfund record as matched immediately
+                    already_matched_indices.add(interfund_index)
+                    break  # Stop after first match for this bank record
+                # Also check if there's a direct credit match (less likely but possible)
+                elif abs(bank_row['Credit'] - interfund_amount) < 0.01:
+                    matches_found.append({
+                        'matched': True,
+                        'source': 'Interfund',
+                        'matched_index': interfund_index,
+                        'match_reason': f"Credit amount {interfund_amount} matches with Interfund",
+                        'confidence': 'medium'
+                    })
+                    # Mark this interfund record as matched immediately
+                    already_matched_indices.add(interfund_index)
+                    break  # Stop after first match for this bank record
+            except (ValueError, TypeError) as e:
+                if debug_mode:
+                    st.warning(f"DEBUG: Error in interfund matching: {e}")
+                continue
+        
+        if matches_found:
+            return sorted(matches_found, key=lambda x: x.get('confidence', 'low'))[0]
+        return {'matched': False, 'reason': 'No match found in interfund records'}
+
     def match_intermediary_credit(bank_row: pd.Series, matched_df: pd.DataFrame, already_matched_indices: set = None) -> Dict[str, Any]:
         """Match bank records with intermediary credit records"""
         if already_matched_indices is None:
@@ -919,6 +983,7 @@ def run_cross_match_analysis(
     already_matched_choice = set()
     already_matched_intermediary_credit = set()
     already_matched_intermediary_debit = set()
+    already_matched_interfund = set()
     # --- Step 5: Perform Cross-Matching Against ALL Sources ---
     st.subheader("Cross-Matching Bank Records Against All Matched Data")
     
@@ -998,6 +1063,12 @@ def run_cross_match_analysis(
             match_results.append(intermediary_debit_match)
             if debug_mode and bank_index < 3 and intermediary_debit_match.get('matched'):
                 st.success(f"DEBUG: Bank {bank_index} matched with INTERMEDIARY DEBIT")
+        
+        if not df_matched_interfund.empty:
+            interfund_match = match_interfund(bank_row, df_matched_interfund, already_matched_interfund)
+            match_results.append(interfund_match)
+            if debug_mode and bank_index < 3 and interfund_match.get('matched'):
+                st.success(f"DEBUG: Bank {bank_index} matched with INTERFUND")
 
         # Check if any match was found
         successful_matches = [result for result in match_results if result.get('matched', False)]
@@ -1041,26 +1112,27 @@ def run_cross_match_analysis(
     still_unmatched_bank_records_df = pd.DataFrame(still_unmatched_bank_records)
 
     # --- Step 6: Display Match Statistics by Source ---
+# --- Step 6: Display Match Statistics by Source ---
     st.markdown("---")
     st.subheader("Match Statistics by Source")
-    
+
     if not newly_matched_unmatched_bank_records_df.empty:
         match_stats = newly_matched_unmatched_bank_records_df['Match_Source'].value_counts()
         
-        # Update columns to accommodate 6 sources
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        sources = ['Local Adjustments', 'Foreign Adjustments', 'Counterparty Trades', 'Choice Trades', 'Intermediary Credit', 'Intermediary Debit']
-        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFA07A', '#20B2AA']
+        # Update columns to accommodate 7 sources (now including interfund)
+        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+        sources = ['Local Adjustments', 'Foreign Adjustments', 'Counterparty Trades', 'Choice Trades', 'Intermediary Credit', 'Intermediary Debit', 'Interfund']
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFA07A', '#20B2AA', '#BA68C8']
         
         for i, source in enumerate(sources):
             count = match_stats.get(source, 0)
-            with [col1, col2, col3, col4, col5, col6][i]:
+            with [col1, col2, col3, col4, col5, col6, col7][i]:
                 st.metric(f"Matches in {source}", count)
         
         # Pie chart of match sources
         fig, ax = plt.subplots(figsize=(10, 8))
         ax.pie(match_stats.values, labels=match_stats.index, autopct='%1.1f%%', 
-               colors=colors[:len(match_stats)], startangle=90)
+            colors=colors[:len(match_stats)], startangle=90)
         ax.set_title("Distribution of Matches by Source")
         ax.axis('equal')
         st.pyplot(fig)
