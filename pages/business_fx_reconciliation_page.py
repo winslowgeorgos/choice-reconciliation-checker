@@ -96,7 +96,7 @@ def safe_float(x):
         return None
     try:
         s = str(x).replace(",", "").strip()
-        return float(s)
+        return abs(float(s))
     except Exception:
         return None
 
@@ -199,7 +199,7 @@ def amounts_match(a, b, pct_tolerance=0.001, abs_min=0.05):
         return False
 
     tol = max(abs_min, pct_tolerance * max(abs(b), 1.0))
-    return abs(a - b) <= tol
+    return abs(abs(a) - abs(b)) <= tol
 
 
 # utility to ensure the DataFrame has all target columns in order (creates empty cols if missing)

@@ -157,7 +157,7 @@ def safe_float(x):
     try:
         # Convert to string, remove commas, and strip whitespace
         cleaned_x = str(x).replace(',', '').strip()
-        return float(cleaned_x)
+        return abs(float(cleaned_x))
     except (ValueError, TypeError):
         return None
 
@@ -429,7 +429,7 @@ def process_fx_match(
             continue
 
         converted_amount = convert_currency(amount, trade_currency, bank_currency, parsed_date)
-        amount_diff = abs(bank_amt - converted_amount) if converted_amount is not None else float('inf')
+        amount_diff = abs(abs(bank_amt) - abs(converted_amount)) if converted_amount is not None else float('inf')
 
         if converted_amount and abs(converted_amount) > 0.01 and amount_diff < 0.05:
             # Create bank record key for tracking
