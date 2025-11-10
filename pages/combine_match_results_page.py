@@ -141,10 +141,10 @@ def run_cross_match_analysis(
     if 'Credit' not in df_bank_records_processed.columns and 'Amount' in df_bank_records_processed.columns:
         # If we have Amount but no Credit/Debit, we need to determine based on sign or other logic
         df_bank_records_processed['Credit'] = df_bank_records_processed['Amount'].apply(
-            lambda x: x if x > 0 else 0
+            lambda x: abs(x) if abs(x) > 0 else 0
         )
         df_bank_records_processed['Debit'] = df_bank_records_processed['Amount'].apply(
-            lambda x: abs(x) if x < 0 else 0
+            lambda x: abs(x) if abs(x) > 0 else 0
         )
     else:
         # Handle individual Credit/Debit columns
@@ -194,322 +194,6 @@ def run_cross_match_analysis(
             st.write(f"DEBUG: Choice columns: {list(df_matched_choice.columns)}")
             st.write(f"DEBUG: Choice sample: {df_matched_choice.head(1).to_dict('records')}")
 
-#     # --- Step 4: Define Matching Functions for ALL Sources ---
-#     def match_adjustments_local(bank_row: pd.Series, matched_df: pd.DataFrame) -> Dict[str, Any]:
-#         """Match bank records with local adjustments"""
-#         matches_found = []
-#         for adj_index, adj_row in matched_df.iterrows():
-#             try:
-#                 # Date matching
-#                 adj_date = pd.to_datetime(adj_row.get('Adjustment_Date'), errors='coerce')
-#                 if pd.isna(adj_date) or pd.isna(bank_row['Date']) or adj_date != bank_row['Date']:
-#                     continue
-                    
-#                 # Bank table matching
-#                 adj_bank_table = str(adj_row.get('Bank_Table', ''))
-#                 if adj_bank_table.lower() != str(bank_row['Bank']).lower():
-#                     continue
-                
-#                 # Amount and operation matching
-#                 adj_amount = float(adj_row.get('Adjustment_Amount', 0))
-#                 adj_operation = str(adj_row.get('Adjustment_Operation', '')).lower()
-                
-#                 if adj_operation == 'credit' and abs(bank_row['Credit'] - adj_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Local Adjustments',
-#                         'matched_index': adj_index,
-#                         'match_reason': f"Credit amount {adj_amount} matches with operation {adj_operation}",
-#                         'confidence': 'high'
-#                     })
-#                 elif adj_operation == 'debit' and abs(bank_row['Debit'] - adj_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Local Adjustments',
-#                         'matched_index': adj_index,
-#                         'match_reason': f"Debit amount {adj_amount} matches with operation {adj_operation}",
-#                         'confidence': 'high'
-#                     })
-#             except (ValueError, TypeError) as e:
-#                 if debug_mode:
-#                     st.warning(f"DEBUG: Error in local adjustments matching: {e}")
-#                 continue
-        
-#         if matches_found:
-#             # Return the best match (first one for now)
-#             return matches_found[0]
-#         return {'matched': False, 'reason': 'No match found in local adjustments'}
-
-#     def match_adjustments_foreign(bank_row: pd.Series, matched_df: pd.DataFrame) -> Dict[str, Any]:
-#         """Match bank records with foreign adjustments"""
-#         matches_found = []
-#         for adj_index, adj_row in matched_df.iterrows():
-#             try:
-#                 # Date matching
-#                 adj_date = pd.to_datetime(adj_row.get('Adjustment_Date'), errors='coerce')
-#                 if pd.isna(adj_date) or pd.isna(bank_row['Date']) or adj_date != bank_row['Date']:
-#                     continue
-                    
-#                 # Bank table matching
-#                 adj_bank_table = str(adj_row.get('Bank_Table', ''))
-#                 if adj_bank_table.lower() != str(bank_row['Bank']).lower():
-#                     continue
-                
-#                 # Amount and operation matching
-#                 adj_amount = float(adj_row.get('Adjustment_Amount', 0))
-#                 adj_operation = str(adj_row.get('Adjustment_Operation', '')).lower()
-                
-#                 if adj_operation == 'credit' and abs(bank_row['Credit'] - adj_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Foreign Adjustments',
-#                         'matched_index': adj_index,
-#                         'match_reason': f"Credit amount {adj_amount} matches with operation {adj_operation}",
-#                         'confidence': 'high'
-#                     })
-#                 elif adj_operation == 'debit' and abs(bank_row['Debit'] - adj_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Foreign Adjustments',
-#                         'matched_index': adj_index,
-#                         'match_reason': f"Debit amount {adj_amount} matches with operation {adj_operation}",
-#                         'confidence': 'high'
-#                     })
-#             except (ValueError, TypeError) as e:
-#                 if debug_mode:
-#                     st.warning(f"DEBUG: Error in foreign adjustments matching: {e}")
-#                 continue
-        
-#         if matches_found:
-#             return matches_found[0]
-#         return {'matched': False, 'reason': 'No match found in foreign adjustments'}
-
-#     def match_counterparty(bank_row: pd.Series, matched_df: pd.DataFrame) -> Dict[str, Any]:
-#         """Match bank records with counterparty trades"""
-#         matches_found = []
-#         for trade_index, trade_row in matched_df.iterrows():
-#             try:
-#                 # Date matching
-#                 trade_date = pd.to_datetime(trade_row.get('Date'), errors='coerce')
-#                 if pd.isna(trade_date) or pd.isna(bank_row['Date']) or trade_date != bank_row['Date']:
-#                     continue
-                    
-#                 # Bank table matching - check different possible column names
-#                 trade_bank_table = str(trade_row.get('Bank_Table', trade_row.get('Bank Table', '')))
-#                 if trade_bank_table.lower() != str(bank_row['Bank']).lower():
-#                     continue
-                
-#                 # Amount and column matching
-#                 trade_amount = float(trade_row.get('Trade Amount', trade_row.get('Amount', 0)))
-#                 matched_column = str(trade_row.get('Matched In Column', trade_row.get('Matched Column', ''))).lower()
-                
-#                 # Check both credit and debit scenarios
-#                 if matched_column == 'credit' and abs(bank_row['Credit'] - trade_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Counterparty Trades',
-#                         'matched_index': trade_index,
-#                         'match_reason': f"Credit amount {trade_amount} matches in {matched_column} column",
-#                         'confidence': 'high'
-#                     })
-#                 elif matched_column == 'debit' and abs(bank_row['Debit'] - trade_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Counterparty Trades',
-#                         'matched_index': trade_index,
-#                         'match_reason': f"Debit amount {trade_amount} matches in {matched_column} column",
-#                         'confidence': 'high'
-#                     })
-#                 # If no matched column specified, try both credit and debit
-#                 elif not matched_column or matched_column == '':
-#                     if abs(bank_row['Credit'] - trade_amount) < 0.01:
-#                         matches_found.append({
-#                             'matched': True,
-#                             'source': 'Counterparty Trades',
-#                             'matched_index': trade_index,
-#                             'match_reason': f"Credit amount {trade_amount} matches (auto-detected)",
-#                             'confidence': 'medium'
-#                         })
-#                     elif abs(bank_row['Debit'] - trade_amount) < 0.01:
-#                         matches_found.append({
-#                             'matched': True,
-#                             'source': 'Counterparty Trades',
-#                             'matched_index': trade_index,
-#                             'match_reason': f"Debit amount {trade_amount} matches (auto-detected)",
-#                             'confidence': 'medium'
-#                         })
-#             except (ValueError, TypeError) as e:
-#                 if debug_mode:
-#                     st.warning(f"DEBUG: Error in counterparty matching: {e}")
-#                 continue
-        
-#         if matches_found:
-#             # Return the highest confidence match
-#             return sorted(matches_found, key=lambda x: x.get('confidence', 'low'))[0]
-#         return {'matched': False, 'reason': 'No match found in counterparty trades'}
-
-#     def match_choice(bank_row: pd.Series, matched_df: pd.DataFrame) -> Dict[str, Any]:
-#         """Match bank records with choice trades"""
-#         matches_found = []
-#         for trade_index, trade_row in matched_df.iterrows():
-#             try:
-#                 # Date matching
-#                 trade_date = pd.to_datetime(trade_row.get('Date'), errors='coerce')
-#                 if pd.isna(trade_date) or pd.isna(bank_row['Date']) or trade_date != bank_row['Date']:
-#                     continue
-                    
-#                 # Bank table matching - check different possible column names
-#                 trade_bank_table = str(trade_row.get('Bank_Table', trade_row.get('Bank Table', '')))
-#                 if trade_bank_table.lower() != str(bank_row['Bank']).lower():
-#                     continue
-                
-#                 # Amount and column matching
-#                 trade_amount = float(trade_row.get('Trade Amount', trade_row.get('Amount', 0)))
-#                 matched_column = str(trade_row.get('Matched In Column', trade_row.get('Matched Column', ''))).lower()
-                
-#                 # Check both credit and debit scenarios
-#                 if matched_column == 'credit' and abs(bank_row['Credit'] - trade_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Choice Trades',
-#                         'matched_index': trade_index,
-#                         'match_reason': f"Credit amount {trade_amount} matches in {matched_column} column",
-#                         'confidence': 'high'
-#                     })
-#                 elif matched_column == 'debit' and abs(bank_row['Debit'] - trade_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Choice Trades',
-#                         'matched_index': trade_index,
-#                         'match_reason': f"Debit amount {trade_amount} matches in {matched_column} column",
-#                         'confidence': 'high'
-#                     })
-#                 # If no matched column specified, try both credit and debit
-#                 elif not matched_column or matched_column == '':
-#                     if abs(bank_row['Credit'] - trade_amount) < 0.01:
-#                         matches_found.append({
-#                             'matched': True,
-#                             'source': 'Choice Trades',
-#                             'matched_index': trade_index,
-#                             'match_reason': f"Credit amount {trade_amount} matches (auto-detected)",
-#                             'confidence': 'medium'
-#                         })
-#                     elif abs(bank_row['Debit'] - trade_amount) < 0.01:
-#                         matches_found.append({
-#                             'matched': True,
-#                             'source': 'Choice Trades',
-#                             'matched_index': trade_index,
-#                             'match_reason': f"Debit amount {trade_amount} matches (auto-detected)",
-#                             'confidence': 'medium'
-#                         })
-#             except (ValueError, TypeError) as e:
-#                 if debug_mode:
-#                     st.warning(f"DEBUG: Error in choice matching: {e}")
-#                 continue
-        
-#         if matches_found:
-#             # Return the highest confidence match
-#             return sorted(matches_found, key=lambda x: x.get('confidence', 'low'))[0]
-#         return {'matched': False, 'reason': 'No match found in choice trades'}
-
-# #--------------------------------------------------------------------------------------------------
-
-
-# # ADD NEW MATCHING FUNCTIONS FOR INTERMEDIARY BANK RECONCILIATION:
-
-#     def match_intermediary_credit(bank_row: pd.Series, matched_df: pd.DataFrame) -> Dict[str, Any]:
-#         """Match bank records with intermediary credit records"""
-#         matches_found = []
-#         for intermediary_index, intermediary_row in matched_df.iterrows():
-#             try:
-#                 # Date matching
-#                 intermediary_date = pd.to_datetime(intermediary_row.get('Date'), errors='coerce')
-#                 if pd.isna(intermediary_date) or pd.isna(bank_row['Date']) or intermediary_date != bank_row['Date']:
-#                     continue
-                    
-#                 # Bank table matching
-#                 intermediary_bank_table = str(intermediary_row.get('Bank_Table', intermediary_row.get('Bank Table', '')))
-#                 if intermediary_bank_table.lower() != str(bank_row['Bank']).lower():
-#                     continue
-                
-#                 # Amount matching - Credit side matches with Debit column in bank (per rules)
-#                 intermediary_amount = float(intermediary_row.get('Intermediary Amount', intermediary_row.get('Amount', 0)))
-
-#                 # st.warning(f"DEBUG: Intermediary Debit Matching - Bank Date: {bank_row['Date']}, Bank: {bank_row['Bank']}, Credit: {bank_row['Credit']}, Debit: {bank_row['Debit']}, Intermediary Date: {intermediary_date}, Intermediary Bank: {intermediary_bank_table}, Intermediary Amount: {intermediary_amount} : resulting {abs(bank_row['Debit']) - abs(intermediary_amount)} , {abs(abs(bank_row['Debit']) - abs(intermediary_amount))}  : {abs(abs(bank_row['Debit']) - abs(intermediary_amount)) < 0.01}")
-                
-#                 # Credit side should match with bank's Debit column
-#                 if abs(abs(bank_row['Debit']) - abs(intermediary_amount)) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Intermediary Credit',
-#                         'matched_index': intermediary_index,
-#                         'match_reason': f"Debit amount {intermediary_amount} matches with Intermediary Credit",
-#                         'confidence': 'high'
-#                     })
-#                 # Also check if there's a direct credit match (less likely but possible)
-#                 elif abs(bank_row['Credit'] - intermediary_amount) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Intermediary Credit',
-#                         'matched_index': intermediary_index,
-#                         'match_reason': f"Credit amount {intermediary_amount} matches with Intermediary Credit",
-#                         'confidence': 'medium'
-#                     })
-#             except (ValueError, TypeError) as e:
-#                 if debug_mode:
-#                     st.warning(f"DEBUG: Error in intermediary credit matching: {e}")
-#                 continue
-        
-#         if matches_found:
-#             return sorted(matches_found, key=lambda x: x.get('confidence', 'low'))[0]
-#         return {'matched': False, 'reason': 'No match found in intermediary credit records'}
-
-#     def match_intermediary_debit(bank_row: pd.Series, matched_df: pd.DataFrame) -> Dict[str, Any]:
-#         """Match bank records with intermediary debit records"""
-#         matches_found = []
-#         for intermediary_index, intermediary_row in matched_df.iterrows():
-#             try:
-#                 # Date matching
-#                 intermediary_date = pd.to_datetime(intermediary_row.get('Date'), errors='coerce')
-#                 if pd.isna(intermediary_date) or pd.isna(bank_row['Date']) or intermediary_date != bank_row['Date']:
-#                     continue
-                    
-#                 # Bank table matching
-#                 intermediary_bank_table = str(intermediary_row.get('Bank_Table', intermediary_row.get('Bank Table', '')))
-#                 if intermediary_bank_table.lower() != str(bank_row['Bank']).lower():
-#                     continue
-                
-#                 # Amount matching - Debit side matches with Credit column in bank (per rules)
-#                 intermediary_amount = float(intermediary_row.get('Intermediary Amount', intermediary_row.get('Amount', 0)))
-
-#                 # st.warning(f"DEBUG: Intermediary Debit Matching - Bank Date: {bank_row['Date']}, Bank: {bank_row['Bank']}, Credit: {bank_row['Credit']}, Debit: {bank_row['Debit']}, Intermediary Date: {intermediary_date}, Intermediary Bank: {intermediary_bank_table}, Intermediary Amount: {intermediary_amount} : resulting {abs(bank_row['Credit']) - abs(intermediary_amount)} , {abs(abs(bank_row['Credit']) - abs(intermediary_amount))}  : {abs(abs(bank_row['Credit']) - abs(intermediary_amount)) < 0.01}")
-                
-#                 # Debit side should match with bank's Credit column
-#                 if abs(abs(bank_row['Credit']) - abs(intermediary_amount)) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Intermediary Debit',
-#                         'matched_index': intermediary_index,
-#                         'match_reason': f"Credit amount {intermediary_amount} matches with Intermediary Debit",
-#                         'confidence': 'high'
-#                     })
-#                 # Also check if there's a direct debit match (less likely but possible)
-#                 elif abs(abs(bank_row['Debit']) - abs(intermediary_amount)) < 0.01:
-#                     matches_found.append({
-#                         'matched': True,
-#                         'source': 'Intermediary Debit',
-#                         'matched_index': intermediary_index,
-#                         'match_reason': f"Debit amount {intermediary_amount} matches with Intermediary Debit",
-#                         'confidence': 'medium'
-#                     })
-#             except (ValueError, TypeError) as e:
-#                 if debug_mode:
-#                     st.warning(f"DEBUG: Error in intermediary debit matching: {e}")
-#                 continue
-        
-#         if matches_found:
-#             return sorted(matches_found, key=lambda x: x.get('confidence', 'low'))[0]
-#         return {'matched': False, 'reason': 'No match found in intermediary debit records'}
 
 
     # --- Step 4: Define Matching Functions for ALL Sources ---
@@ -539,7 +223,7 @@ def run_cross_match_analysis(
                 adj_amount = float(adj_row.get('Adjustment_Amount', 0))
                 adj_operation = str(adj_row.get('Adjustment_Operation', '')).lower()
                 
-                if adj_operation == 'credit' and abs(bank_row['Credit'] - adj_amount) < 0.01:
+                if adj_operation == 'credit' and abs(abs(bank_row['Credit']) - abs(adj_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Local Adjustments',
@@ -550,7 +234,7 @@ def run_cross_match_analysis(
                     # Mark this adjustment as matched immediately
                     already_matched_indices.add(adj_index)
                     break  # Stop after first match for this bank record
-                elif adj_operation == 'debit' and abs(bank_row['Debit'] - adj_amount) < 0.01:
+                elif adj_operation == 'debit' and abs(abs(bank_row['Debit']) - abs(adj_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Local Adjustments',
@@ -597,7 +281,7 @@ def run_cross_match_analysis(
                 adj_amount = float(adj_row.get('Adjustment_Amount', 0))
                 adj_operation = str(adj_row.get('Adjustment_Operation', '')).lower()
                 
-                if adj_operation == 'credit' and abs(bank_row['Credit'] - adj_amount) < 0.01:
+                if adj_operation == 'credit' and abs(abs(bank_row['Credit']) - abs(adj_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Foreign Adjustments',
@@ -608,7 +292,7 @@ def run_cross_match_analysis(
                     # Mark this adjustment as matched immediately
                     already_matched_indices.add(adj_index)
                     break  # Stop after first match for this bank record
-                elif adj_operation == 'debit' and abs(bank_row['Debit'] - adj_amount) < 0.01:
+                elif adj_operation == 'debit' and abs(abs(bank_row['Debit']) - abs(adj_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Foreign Adjustments',
@@ -655,7 +339,7 @@ def run_cross_match_analysis(
                 matched_column = str(trade_row.get('Matched In Column', trade_row.get('Matched Column', ''))).lower()
                 
                 # Check both credit and debit scenarios
-                if matched_column == 'credit' and abs(bank_row['Credit'] - trade_amount) < 0.01:
+                if matched_column == 'credit' and abs(abs(bank_row['Credit']) - abs(trade_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Counterparty Trades',
@@ -666,7 +350,7 @@ def run_cross_match_analysis(
                     # Mark this trade as matched immediately
                     already_matched_indices.add(trade_index)
                     break  # Stop after first match for this bank record
-                elif matched_column == 'debit' and abs(bank_row['Debit'] - trade_amount) < 0.01:
+                elif matched_column == 'debit' and abs(abs(bank_row['Debit']) - abs(trade_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Counterparty Trades',
@@ -679,7 +363,7 @@ def run_cross_match_analysis(
                     break  # Stop after first match for this bank record
                 # If no matched column specified, try both credit and debit
                 elif not matched_column or matched_column == '':
-                    if abs(bank_row['Credit'] - trade_amount) < 0.01:
+                    if abs(abs(bank_row['Credit']) - abs(trade_amount)) < 0.01:
                         matches_found.append({
                             'matched': True,
                             'source': 'Counterparty Trades',
@@ -690,7 +374,7 @@ def run_cross_match_analysis(
                         # Mark this trade as matched immediately
                         already_matched_indices.add(trade_index)
                         break  # Stop after first match for this bank record
-                    elif abs(bank_row['Debit'] - trade_amount) < 0.01:
+                    elif abs(abs(bank_row['Debit']) - abs(trade_amount)) < 0.01:
                         matches_found.append({
                             'matched': True,
                             'source': 'Counterparty Trades',
@@ -738,7 +422,7 @@ def run_cross_match_analysis(
                 matched_column = str(trade_row.get('Matched In Column', trade_row.get('Matched Column', ''))).lower()
                 
                 # Check both credit and debit scenarios
-                if matched_column == 'credit' and abs(bank_row['Credit'] - trade_amount) < 0.01:
+                if matched_column == 'credit' and abs(abs(bank_row['Credit']) - abs(trade_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Choice Trades',
@@ -749,7 +433,7 @@ def run_cross_match_analysis(
                     # Mark this trade as matched immediately
                     already_matched_indices.add(trade_index)
                     break  # Stop after first match for this bank record
-                elif matched_column == 'debit' and abs(bank_row['Debit'] - trade_amount) < 0.01:
+                elif matched_column == 'debit' and abs(abs(bank_row['Debit']) - abs(trade_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Choice Trades',
@@ -762,7 +446,7 @@ def run_cross_match_analysis(
                     break  # Stop after first match for this bank record
                 # If no matched column specified, try both credit and debit
                 elif not matched_column or matched_column == '':
-                    if abs(bank_row['Credit'] - trade_amount) < 0.01:
+                    if abs(abs(bank_row['Credit']) - abs(trade_amount)) < 0.01:
                         matches_found.append({
                             'matched': True,
                             'source': 'Choice Trades',
@@ -773,7 +457,7 @@ def run_cross_match_analysis(
                         # Mark this trade as matched immediately
                         already_matched_indices.add(trade_index)
                         break  # Stop after first match for this bank record
-                    elif abs(bank_row['Debit'] - trade_amount) < 0.01:
+                    elif abs(abs(bank_row['Debit']) - abs(trade_amount)) < 0.01:
                         matches_found.append({
                             'matched': True,
                             'source': 'Choice Trades',
@@ -834,7 +518,7 @@ def run_cross_match_analysis(
                     already_matched_indices.add(interfund_index)
                     break  # Stop after first match for this bank record
                 # Also check if there's a direct credit match (less likely but possible)
-                elif abs(bank_row['Credit'] - interfund_amount) < 0.01:
+                elif abs(abs(bank_row['Credit']) - abs(interfund_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Interfund',
@@ -894,7 +578,7 @@ def run_cross_match_analysis(
                     already_matched_indices.add(intermediary_index)
                     break  # Stop after first match for this bank record
                 # Also check if there's a direct credit match (less likely but possible)
-                elif abs(bank_row['Credit'] - intermediary_amount) < 0.01:
+                elif abs(abs(bank_row['Credit']) - abs(intermediary_amount)) < 0.01:
                     matches_found.append({
                         'matched': True,
                         'source': 'Intermediary Credit',

@@ -98,7 +98,7 @@ def safe_float(x):
         return None
     try:
         cleaned_x = str(x).replace(',', '').strip()
-        return float(cleaned_x)
+        return abs(float(cleaned_x))
     except (ValueError, TypeError):
         return None
 
