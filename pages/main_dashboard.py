@@ -12,6 +12,8 @@ import plotly.graph_objects as go
 # Import functions from other pages (assuming these files exist in the same directory)
 from fx_reconcilliation_app_page import fx_reconciliation_app
 from intermediary_bank_reconciliation_page import intermediary_bank_reconciliation_app
+# Add this import statement with your other imports
+from interfund_bank_reconciliation_page import interfund_bank_reconciliation_app
 from fx_trade_reconciliation_page import graphed_analysis_app
 from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
 from business_fx_reconciliation_page import business_reconciliation_app   # NEW
@@ -655,6 +657,16 @@ def get_excel_sheet_names(uploaded_file):
         return []
 
 # --- Session State Initialization ---
+# Add this to your session state initialization
+if 'df_matched_interfund' not in st.session_state:
+    st.session_state.df_matched_interfund = pd.DataFrame()
+    
+if 'df_unmatched_interfund' not in st.session_state:
+    st.session_state.df_unmatched_interfund = pd.DataFrame()
+if 'df_matched_intermediary_credit' not in st.session_state: st.session_state.df_matched_intermediary_credit = pd.DataFrame()
+if 'df_matched_intermediary_debit' not in st.session_state: st.session_state.df_matched_intermediary_debit = pd.DataFrame()
+if 'df_unmatched_intermediary_credit' not in st.session_state: st.session_state.df_unmatched_intermediary_credit = pd.DataFrame()
+if 'df_unmatched_intermediary_debit' not in st.session_state: st.session_state.df_unmatched_intermediary_debit = pd.DataFrame()
 if 'df_matched_adjustments_local' not in st.session_state: st.session_state.df_matched_adjustments_local = pd.DataFrame()
 if 'df_matched_adjustments_foreign' not in st.session_state: st.session_state.df_matched_adjustments_foreign = pd.DataFrame()
 if 'df_unmatched_adjustments_local' not in st.session_state: st.session_state.df_unmatched_adjustments_local = pd.DataFrame()
@@ -672,7 +684,7 @@ if 'bank_uploaded_file_objs' not in st.session_state: st.session_state.bank_uplo
 if 'raw_bank_data_previews' not in st.session_state: st.session_state.raw_bank_data_previews = {}
 if 'merged_bank_statement' not in st.session_state: st.session_state.merged_bank_statement = pd.DataFrame()
 if "cached_bank_files" not in st.session_state: st.session_state.cached_bank_files = {}
-page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Intermediary Reconciliation", "Business FX Reconciliation", "Cross-Match Analysis"])
+page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Intermediary Reconciliation", "Interfund Reconciliation", "Business FX Reconciliation", "Cross-Match Analysis"])
 
 
 # # Add the detection function from your reference code
@@ -1665,6 +1677,15 @@ elif page_selection == "Intermediary Reconciliation":
          st.session_state.df_unmatched_intermediary_credit, 
          st.session_state.df_unmatched_intermediary_debit, 
          st.session_state.df_unmatched_bank_intermediary) = intermediary_bank_reconciliation_app(st.session_state.bank_dfs)
+# Add this to your main app.py file
+
+elif page_selection == "Interfund Reconciliation":
+    st.title("Interfund Bank Reconciliation App")
+    if not st.session_state.bank_dfs: 
+        st.warning("Please go to 'Bank Statement Management' to upload and process bank statements first.")
+    else: 
+        (st.session_state.df_matched_interfund,
+         st.session_state.df_unmatched_interfund) = interfund_bank_reconciliation_app(st.session_state.bank_dfs)
 elif page_selection == "Business FX Reconciliation":
     st.title("Business FX Reconciliation App")
     if not st.session_state.bank_dfs: st.warning("Please go to 'Bank Statement Management' to upload and process bank statements first.")
@@ -1678,8 +1699,9 @@ elif page_selection == "Cross-Match Analysis":
         st.session_state.df_matched_counterparty.empty and 
         st.session_state.df_matched_choice.empty and
         st.session_state.df_matched_intermediary_credit.empty and
-        st.session_state.df_matched_intermediary_debit.empty):
-        st.warning("Please first run the 'Adjustments Reconciliation', 'FX Trade Reconciliation', and 'Intermediary Bank Reconciliation' apps to populate the dataframes needed for cross-matching.")
+        st.session_state.df_matched_intermediary_debit.empty and
+        st.session_state.df_matched_interfund.empty):  # NEW: Add interfund check
+        st.warning("Please first run the 'Adjustments Reconciliation', 'FX Trade Reconciliation', 'Intermediary Bank Reconciliation', and 'Interfund Bank Reconciliation' apps to populate the dataframes needed for cross-matching.")
     else:
         if st.button("Perform Cross-Match Analysis"):
             with st.spinner("Performing cross-match analysis..."):
@@ -1688,8 +1710,9 @@ elif page_selection == "Cross-Match Analysis":
                     st.session_state.df_matched_adjustments_foreign,
                     st.session_state.df_matched_counterparty,
                     st.session_state.df_matched_choice,
-                    st.session_state.df_matched_intermediary_credit,  # NEW
-                    st.session_state.df_matched_intermediary_debit,   # NEW
+                    st.session_state.df_matched_intermediary_credit,
+                    st.session_state.df_matched_intermediary_debit,
+                    st.session_state.df_matched_interfund,  # NEW: Add interfund matches
                     st.session_state.bank_dfs,
                     debug_mode=st.session_state.debug_mode
                 )
