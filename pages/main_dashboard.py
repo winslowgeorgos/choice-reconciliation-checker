@@ -17,6 +17,7 @@ from interfund_bank_reconciliation_page import interfund_bank_reconciliation_app
 from fx_trade_reconciliation_page import graphed_analysis_app
 from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
 from business_fx_reconciliation_page import business_reconciliation_app   # NEW
+from mpesa_reconciliation_app_page import mpesa_gl_reconciliation_app
 
 import requests
 import time
@@ -684,7 +685,7 @@ if 'bank_uploaded_file_objs' not in st.session_state: st.session_state.bank_uplo
 if 'raw_bank_data_previews' not in st.session_state: st.session_state.raw_bank_data_previews = {}
 if 'merged_bank_statement' not in st.session_state: st.session_state.merged_bank_statement = pd.DataFrame()
 if "cached_bank_files" not in st.session_state: st.session_state.cached_bank_files = {}
-page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Intermediary Reconciliation", "Interfund Reconciliation", "Business FX Reconciliation", "Cross-Match Analysis"])
+page_selection = st.sidebar.radio("Go to", ["Bank Statement Management", "Adjacements Reconciliation", "FX Trade Reconciliation", "Intermediary Reconciliation", "Interfund Reconciliation", "Business FX Reconciliation", "Cross-Match Analysis", "M-Pesa & GL Reconciliation"])
 
 
 # # Add the detection function from your reference code
@@ -1719,3 +1720,6 @@ elif page_selection == "Cross-Match Analysis":
         else: 
             st.info("Click the button above to run the cross-match analysis.")
         cross_match_analysis_app()
+elif page_selection == "M-Pesa & GL Reconciliation":
+    st.title("M-Pesa & GL Reconciliation App")
+    mpesa_gl_reconciliation_app()
