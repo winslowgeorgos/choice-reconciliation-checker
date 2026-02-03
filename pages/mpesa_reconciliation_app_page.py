@@ -673,6 +673,7 @@ def reconcile_gl_with_mpesa_optimized(gl_df, mpesa_df, system_type='Choice'):
         if 'Date_Diff_Days' in matched_df.columns:
             matched_df = matched_df.sort_values('Date_Diff_Days')
             matched_records = matched_df.to_dict('records')
+    st.write(f"Matched Records: {len(matched_records)}")
     
     return matched_records, unmatched_gl_records, unmatched_mpesa_records
 
