@@ -13,6 +13,8 @@ from openpyxl import load_workbook
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+
+from auth_system import log_audit, require_auth
 warnings.filterwarnings('ignore')
 
 # --- Constants ---
@@ -983,7 +985,7 @@ def mpesa_gl_reconciliation_app():
     st.header("📊 Results")
     
     # GL Reconciliation Results
-    if st.session_state.mpesa_gl_matched_records:
+    if st.session_state.mpesa_gl_matched_records is not None and len(st.session_state.mpesa_gl_matched_records) > 0:
         st.subheader(f"📋 {system_type} GL Reconciliation Results")
         
         # Calculate match quality statistics
@@ -1042,7 +1044,7 @@ def mpesa_gl_reconciliation_app():
                 )
     
     # Transaction Reconciliation Results
-    if st.session_state.mpesa_transaction_matched_records:
+    if not st.session_state.mpesa_transaction_matched_records.empty:
         st.subheader(f"📋 {system_type} Transaction Reconciliation Results")
         
         trans_matched_df = pd.DataFrame(st.session_state.mpesa_transaction_matched_records)
@@ -1088,7 +1090,7 @@ def mpesa_gl_reconciliation_app():
                 )
     
     # Performance Statistics
-    if st.session_state.mpesa_gl_matched_records or st.session_state.mpesa_transaction_matched_records:
+    if not st.session_state.mpesa_gl_matched_records.empty or not st.session_state.mpesa_transaction_matched_records.empty:
         st.header("📊 Performance Summary")
         
         total_processed = (
@@ -1124,6 +1126,25 @@ def mpesa_gl_reconciliation_app():
     debug_print("ENDING OPTIMIZED M-PESA & GL RECONCILIATION APP")
     debug_print("=" * 80)
     
+    # Add to mpesa_reconciliation_app_page.py - at the end of mpesa_gl_reconciliation_app function
+
+    # Auto-save M-Pesa results
+    if 'authenticated' in st.session_state and st.session_state['authenticated']:
+        if not st.session_state.get('mpesa_gl_matched_records').empty or not st.session_state.get('mpesa_transaction_matched_records').empty:
+            version_id = get_active_version_id()
+            if version_id:
+                user_id = st.session_state['user']['user_id']
+                current_date = datetime.now().strftime('%Y-%m-%d')
+                
+                # Convert lists to DataFrames for saving
+                results_to_save = {
+                    'mpesa_gl_matched_records': pd.DataFrame(st.session_state.mpesa_gl_matched_records) if st.session_state.mpesa_gl_matched_records else pd.DataFrame(),
+                    'mpesa_gl_unmatched_gl': pd.DataFrame(st.session_state.mpesa_gl_unmatched_gl) if st.session_state.mpesa_gl_unmatched_gl else pd.DataFrame(),
+                    'mpesa_gl_unmatched_mpesa': pd.DataFrame(st.session_state.mpesa_gl_unmatched_mpesa) if st.session_state.mpesa_gl_unmatched_mpesa else pd.DataFrame(),
+                    'mpesa_transaction_matched_records': pd.DataFrame(st.session_state.mpesa_transaction_matched_records) if st.session_state.mpesa_transaction_matched_records else pd.DataFrame(),
+                    'mpesa_transaction_unmatched_trans': pd.DataFrame(st.session_state.mpesa_transaction_unmatched_trans) if st.session_state.mpesa_transaction_unmatched_trans else pd.DataFrame(),
+                    'mpesa_transaction_unmatched_mpesa': pd.DataFrame(st.session_state.mpesa_transaction_unmatched_mpesa) if st.session_state.mpesa_transaction_unmatched_mpesa else pd.DataFrame()
+                }
     return (
         st.session_state.mpesa_gl_matched_records,
         st.session_state.mpesa_gl_unmatched_gl,
