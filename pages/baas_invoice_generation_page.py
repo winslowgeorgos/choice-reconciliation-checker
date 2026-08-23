@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # Constants & paths
 # ============================================================================================
 DATA_DIR = "data/uploads"
+
 CACHE_DIR = "data/cache"
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 BAAS_DB_PATH = "data/baas_invoicing.db"
