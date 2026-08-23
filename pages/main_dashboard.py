@@ -36,6 +36,7 @@ from fx_trade_reconciliation_page import graphed_analysis_app
 from combine_match_results_page import run_cross_match_analysis, cross_match_analysis_app
 from business_fx_reconciliation_page import business_reconciliation_app
 from mpesa_reconciliation_app_page import mpesa_gl_reconciliation_app
+from baas_invoice_generation_page import baas_invoice_generation_app
 
 import requests
 import time
@@ -857,6 +858,7 @@ def main():
             "💼 Business FX": "Business FX Reconciliation",
             "🔗 Cross-Match": "Cross-Match Analysis",
             "📱 M-Pesa": "M-Pesa & GL Reconciliation",
+            "🧾 BaaS Invoicing": "BaaS Invoice Generation",
             "📊 Analytics": "Analytics",
         }
         
@@ -1406,7 +1408,11 @@ def main():
     elif page_selection == "M-Pesa & GL Reconciliation":
         modern_header("M-Pesa & GL Reconciliation", "Match mobile money transactions", "📱")
         mpesa_gl_reconciliation_app()
-    
+
+    elif page_selection == "BaaS Invoice Generation":
+        modern_header("BaaS Invoice Generation", "Generate, preview, download and email BaaS invoices from the income tracker", "🧾")
+        baas_invoice_generation_app()
+
     elif page_selection == "Analytics":
         modern_header("Analytics Dashboard", "Visual insights and performance metrics", "📊")
         analytics_dashboard_modal()

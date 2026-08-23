@@ -700,20 +700,7 @@ def map_dataframe_columns_for_save(df, table_name):
     
     return df_copy
 
-# Call this function right after initializing the database
-# Add this line in your FXReconDB class's _init_database method or right after db = FXReconDB()
-
-# Call this function after db initialization
-# alter_tables_add_missing_columns()
-
 db = FXReconDB()
-
-# # Run dynamic schema update to add all possible columns
-# try:
-#     added = update_database_schema_dynamic()
-#     st.success(f"✅ Database schema updated: {added} columns added")
-# except Exception as e:
-#     st.warning(f"Schema update warning: {e}")
 
 # --- Helper Functions for Record Management ---
 def generate_record_id():
@@ -1771,6 +1758,8 @@ def load_dataframe(filename):
             return pd.DataFrame()
     return pd.DataFrame()
 
+# --- CORRECTED: Reconciliation Functions with Proper Unmatched Bank Record Identification ---
+
 def reconcile_adjustment_row(adj_row, all_bank_dfs, mode, date_tolerance_days=3, amount_tolerance=1.0,
                              debug=False, matched_adjustments_list=None, unmatched_adjustments_list=None,
                              matched_bank_keys=None, already_matched_adjustments=None, skipped_bank_records=None):
@@ -1866,6 +1855,8 @@ def reconcile_adjustment_row(adj_row, all_bank_dfs, mode, date_tolerance_days=3,
         bank_df['_ParsedDate'] = bank_df[date_column].apply(parse_date)
     if 'Skipped_By_Adjustments' not in bank_df.columns:
         bank_df['Skipped_By_Adjustments'] = ""
+    if 'Matched' not in bank_df.columns:
+        bank_df['Matched'] = False
     date_matches_df = bank_df[(bank_df['_ParsedDate'].notna()) & (bank_df['_ParsedDate'].between(ref_date - timedelta(days=date_tolerance_days), ref_date + timedelta(days=date_tolerance_days)))].copy()
     match_found = False
     for idx, bank_row in date_matches_df.iterrows():
@@ -1879,8 +1870,10 @@ def reconcile_adjustment_row(adj_row, all_bank_dfs, mode, date_tolerance_days=3,
                 bank_record_key_operation = 'credit'
             bank_record_key = (target_bank_df_key, bank_row['_ParsedDate'].strftime('%Y-%m-%d'), round(amount, 2), bank_record_key_operation)
             is_already_matched = bank_record_key in matched_bank_keys
+            
             if is_already_matched:
-                continue
+                continue  # Skip already matched bank records
+            
             matched_record = {
                 'Adjustment_Date': parsed_date.strftime('%Y-%m-%d'),
                 'Adjustment_Amount': amount,
@@ -1907,8 +1900,6 @@ def reconcile_adjustment_row(adj_row, all_bank_dfs, mode, date_tolerance_days=3,
                 'Product': product
             }
             matched_adjustments_list.append(matched_record)
-            if "Matched" not in bank_df.columns:
-                bank_df["Matched"] = False
             bank_df.loc[idx, "Matched"] = True
             matched_bank_keys.add(bank_record_key)
             match_found = True
@@ -1950,58 +1941,104 @@ def perform_reconciliation_for_mode(fx_df, all_bank_dfs, mode, debug):
         st.session_state.df_unmatched_adjustments_local = unmatched_df
         st.session_state.matched_local = matched_df
         st.session_state.unmatched_local = unmatched_df
+        st.session_state.matched_bank_keys_local = matched_bank_keys  # Store for later use
     else:
         st.session_state.df_matched_adjustments_foreign = matched_df
         st.session_state.df_unmatched_adjustments_foreign = unmatched_df
         st.session_state.matched_foreign = matched_df
         st.session_state.unmatched_foreign = unmatched_df
+        st.session_state.matched_bank_keys_foreign = matched_bank_keys  # Store for later use
     st.success(f"Reconciliation for {mode.upper()} FX Data Complete!")
     st.write(f"✅ Matched: {len(matched_df)} | ❌ Unmatched: {len(unmatched_df)}")
 
+# --- CORRECTED: identify_unmatched_bank_records function ---
 def identify_unmatched_bank_records(bank_dfs, matched_bank_keys, unmatched_bank_records_list, debug):
+    """Identifies bank records that were not matched by any adjustment."""
+    
     for bank_key, bank_df in bank_dfs.items():
         if bank_df.empty:
+            if debug:
+                st.warning(f"Skipping empty bank statement: {bank_key}")
             continue
+
         bank_df_copy = bank_df.copy()
         bank_df_copy.columns = bank_df_copy.columns.str.strip()
-        date_col = 'Date'
-        amount_cols = ['Credit', 'Debit']
+        date_col = 'Date'  # Standardized column name from preprocessing
+        amount_cols = ['Credit', 'Debit']  # Standardized column names
         description_col = get_description_columns(bank_df_copy.columns.tolist())
+
         if not date_col or not amount_cols or not description_col:
+            st.warning(
+                f"Skipping '{bank_key}': Missing required columns for unmatched bank record identification:"
+                f"{' Date,' if not date_col else ''}"
+                f"{' Amount,' if not amount_cols else ''}"
+                f"{' Description' if not description_col else ''}".rstrip(',')
+            )
             continue
+
+        # _ParsedDate should already exist from preprocessing
         if '_ParsedDate' not in bank_df_copy.columns:
             bank_df_copy['_ParsedDate'] = bank_df_copy[date_col].apply(parse_date)
+
+        # Initialize Matched column if it doesn't exist
+        if 'Matched' not in bank_df_copy.columns:
+            bank_df_copy['Matched'] = False
+
         for idx, row in bank_df_copy.iterrows():
             row_date = row.get('_ParsedDate')
             if pd.isna(row_date) or not isinstance(row_date, datetime):
                 continue
+
             description = str(row.get(description_col, '')).strip()
-            is_matched = False
+            
+            # Check if this record is already marked as matched in the dataframe
+            is_matched_in_df = row.get('Matched', False)
+            
+            # Also check against matched_bank_keys set
+            is_matched_in_keys = False
             for amt_col in amount_cols:
                 amt_val = safe_float(row.get(amt_col))
                 if amt_val is None or abs(amt_val) < 0.01:
                     continue
+
                 rounded_amt = round(amt_val, 2)
                 operation_for_key = 'debit' if 'debit' in amt_col.lower() or amt_val < 0 else 'credit'
                 if 'credit' in amt_col.lower():
                     operation_for_key = 'credit'
-                bank_record_key = (bank_key, row_date.strftime('%Y-%m-%d'), rounded_amt, operation_for_key)
+                elif 'debit' in amt_col.lower():
+                    operation_for_key = 'debit'
+                
+                bank_record_key = (
+                    bank_key,
+                    row_date.strftime('%Y-%m-%d'),
+                    rounded_amt,
+                    operation_for_key
+                )
+
                 if bank_record_key in matched_bank_keys:
-                    is_matched = True
+                    is_matched_in_keys = True
                     break
-            if not is_matched:
+
+            # A record is unmatched if it's NOT matched in the dataframe AND NOT matched in the keys set
+            if not is_matched_in_df and not is_matched_in_keys:
+                final_amt_col_for_unmatched = None
+                final_amt_val_for_unmatched = None
                 for amt_col in amount_cols:
                     amt_val = safe_float(row.get(amt_col))
                     if amt_val is not None and abs(amt_val) >= 0.01:
-                        unmatched_bank_records_list.append({
-                            'Bank_Table': bank_key,
-                            'Date': row_date.strftime('%Y-%m-%d'),
-                            'Description': description,
-                            'Transaction_Type_Column': amt_col,
-                            'Amount': round(amt_val, 2),
-                            'Original_Row_Index': idx
-                        })
+                        final_amt_col_for_unmatched = amt_col
+                        final_amt_val_for_unmatched = round(amt_val, 2)
                         break
+                
+                if final_amt_val_for_unmatched is not None:
+                    unmatched_bank_records_list.append({
+                        'Bank_Table': bank_key,
+                        'Date': row_date.strftime('%Y-%m-%d'),
+                        'Description': description,
+                        'Transaction_Type_Column': final_amt_col_for_unmatched,
+                        'Amount': final_amt_val_for_unmatched,
+                        'Original_Row_Index': idx
+                    })
 
 def perform_full_reconciliation(bank_dfs):
     st.subheader("--- Overall Reconciliation Process ---")
@@ -2012,6 +2049,13 @@ def perform_full_reconciliation(bank_dfs):
         return
     perform_reconciliation_for_mode(st.session_state.fx_trade_df_local, bank_dfs, 'local', st.session_state.debug_mode)
     perform_reconciliation_for_mode(st.session_state.fx_trade_df_foreign, bank_dfs, 'foreign', st.session_state.debug_mode)
+    
+    # Combine matched bank keys from both modes
+    if 'matched_bank_keys_local' in st.session_state:
+        matched_bank_keys_global.update(st.session_state.matched_bank_keys_local)
+    if 'matched_bank_keys_foreign' in st.session_state:
+        matched_bank_keys_global.update(st.session_state.matched_bank_keys_foreign)
+    
     st.subheader("--- Identifying Global Unmatched Bank Records ---")
     identify_unmatched_bank_records(bank_dfs, matched_bank_keys_global, unmatched_bank_records_list_global, st.session_state.debug_mode)
     st.session_state.df_unmatched_bank_records = pd.DataFrame(unmatched_bank_records_list_global)
@@ -2135,6 +2179,10 @@ def fx_reconciliation_app(bank_dfs: dict):
         st.session_state.moved_stats = {'total_moved': 0}
     if 'deleted_stats' not in st.session_state:
         st.session_state.deleted_stats = {'total_deleted': 0}
+    if 'matched_bank_keys_local' not in st.session_state:
+        st.session_state.matched_bank_keys_local = set()
+    if 'matched_bank_keys_foreign' not in st.session_state:
+        st.session_state.matched_bank_keys_foreign = set()
     
     # Moved and deleted dataframes
     for key in ['moved_local_matched', 'moved_local_unmatched', 'moved_foreign_matched', 
@@ -2148,32 +2196,6 @@ def fx_reconciliation_app(bank_dfs: dict):
     update_deleted_stats_cards()
     
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    
-    # # Header
-    # st.markdown("""
-    # <div class="main-header">
-    #     <h1>💱 FX Reconciliation Dashboard</h1>
-    #     <p>Match FX adjustments with bank statements, manage exceptions, and track audit history</p>
-    # </div>
-    # """, unsafe_allow_html=True)
-    
-    # # Data Status Indicators
-    # st.markdown("### 📊 Data Status")
-    # col1, col2, col3 = st.columns(3)
-    
-    # with col1:
-    #     local_status = "✅" if not st.session_state.fx_trade_df_local.empty else "❌"
-    #     st.metric("Local FX Data", f"{local_status} {len(st.session_state.fx_trade_df_local)} records")
-    
-    # with col2:
-    #     foreign_status = "✅" if not st.session_state.fx_trade_df_foreign.empty else "❌"
-    #     st.metric("Foreign FX Data", f"{foreign_status} {len(st.session_state.fx_trade_df_foreign)} records")
-    
-    # with col3:
-    #     bank_status = "✅" if bank_dfs else "❌"
-    #     st.metric("Bank Statements", f"{bank_status} {len(bank_dfs)} files")
-    
-    # st.markdown("---")
     
     # ========== FX RECONCILIATION DATA MANAGEMENT SECTION ==========
     st.markdown("### 📅 Data Management")
@@ -2386,7 +2408,7 @@ def fx_reconciliation_app(bank_dfs: dict):
     with col2: st.metric("Local Unmatched", len(st.session_state.unmatched_local))
     with col3: st.metric("Foreign Matched", len(st.session_state.matched_foreign))
     with col4: st.metric("Foreign Unmatched", len(st.session_state.unmatched_foreign))
-    with col5: st.metric("Bank Records", len(st.session_state.bank_records))
+    with col5: st.metric("Unmatched Bank Records", len(st.session_state.bank_records))
     
     st.markdown("### 📋 Audit Summary")
     col1, col2 = st.columns(2)
@@ -2405,7 +2427,7 @@ def fx_reconciliation_app(bank_dfs: dict):
     # Tabs
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📋 Local Matched", "⚠️ Local Unmatched", "📋 Foreign Matched", "⚠️ Foreign Unmatched",
-        "🏦 Bank Records", "📊 Analysis", "📋 Audit Trail"
+        "🏦 Unmatched Bank Records", "📊 Analysis", "📋 Audit Trail"
     ])
     
     with tab1:
@@ -2465,7 +2487,7 @@ def fx_reconciliation_app(bank_dfs: dict):
             update_moved_stats_cards()
             update_deleted_stats_cards()
         render_editable_dataframe(st.session_state.bank_records, "Unmatched Bank Records", "bank_records",
-                                  on_data_change=update_bank_records, show_delete=True, show_move=False,
+                                  on_data_change=update_bank_records, show_delete=True, show_move=True,
                                   move_targets=move_targets_bank)
     
     with tab6:

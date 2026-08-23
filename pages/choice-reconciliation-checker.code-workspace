@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "choice-reconciliation-checker",
+			"path": ".."
+		},
+		{
+			"name": "assets",
+			"path": "../../../../Downloads/BaaS_Invoice_Generation_Module/assets"
+		}
+	],
+	"settings": {}
+}
