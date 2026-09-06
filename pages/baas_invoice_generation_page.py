@@ -21,6 +21,7 @@ import io
 import json
 import uuid
 import ssl
+import base64
 import smtplib
 import sqlite3
 import logging
@@ -48,6 +49,11 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
+try:
+    from weasyprint import HTML as _WeasyHTML
+except Exception:  # pragma: no cover - optional dependency, PDF export degrades gracefully
+    _WeasyHTML = None
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,17 +62,37 @@ logger = logging.getLogger(__name__)
 # Constants & paths
 # ============================================================================================
 DATA_DIR = "data/uploads"
-
 CACHE_DIR = "data/cache"
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 BAAS_DB_PATH = "data/baas_invoicing.db"
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
-
+print(f'Asset path : ', ASSETS_DIR)
 LOGO_PATH = os.path.join(ASSETS_DIR, "choicebank_invoice_header.png")
 FOOTER_BANNER_PATH = os.path.join(ASSETS_DIR, "choicebank_invoice_footer.png")
 
 WHT_RATE = 0.05            # 5% withholding tax - KES invoices only
+
+# Base font size used throughout the generated .docx invoice (points). Kept as a single
+# constant so the whole document scales consistently if it ever needs to change again.
+INVOICE_FONT_SIZE_PT = 10
+
+
+def compute_wht_gross_up(platform_fee_net):
+    """
+    Grosses up a KES platform fee and computes the withholding tax on it, using the
+    exact formula supplied for this workbook (platform_fee is the net figure taken
+    straight from the BAAS INCOME text, e.g. the "200,000" in "PLATFORM FEE - 200,000"):
+
+        Withholding Tax     = platform_fee * 5 / 95
+        Gross Platform Fee  = platform_fee * 100 / 95
+        Net Payable         = platform_fee                    (i.e. 95% of the gross)
+
+    Returns (gross, withholding_tax), both rounded to 2 decimal places.
+    """
+    gross = round(platform_fee_net * 100 / 95, 2)
+    wht = round(platform_fee_net * 5 / 95, 2)
+    return gross, wht
 DEFAULT_FX_RATE = 129.29   # fallback USD -> KES rate if none can be found in the row text
 CURRENCY_SYMBOLS = {"KES": "KES", "USD": "USD", "EUR": "EUR", "GBP": "GBP"}
 
@@ -553,19 +579,22 @@ def resolve_invoice_amounts(parsed, client_row=None, currency_override=None, fx_
 
     Resolution rules
     -----------------
-    * A line item tagged with an explicit currency (e.g. '7usd') always wins.
-    * A line item written as amount*rate (no tag) is treated as already being in USD -
-      the multiplication is only there for the internal KES bookkeeping total.
-    * A line item written as amount/rate is a KES figure being converted to USD.
-    * A line item with neither a tag nor a rate has no information of its own: it is
-      priced in the invoice's overall currency. If that currency is USD, the raw
-      (KES-denominated) amount is converted using whichever FX rate appears elsewhere
-      in the same row (falling back to DEFAULT_FX_RATE).
+    * No FX conversion is ever applied to a line item's amount. Whatever number
+      appears in the BAAS INCOME text for a given line - however it is written
+      (a bare number, 'usd'-tagged, '*rate' or '/rate') - is used exactly as-is
+      as that line's amount in the invoice's own currency. Any '*rate' / '/rate'
+      suffix is purely the tracker's own internal bookkeeping arithmetic and is
+      ignored for invoicing purposes; it is never multiplied or divided into the
+      line amount.
     * Invoice currency: an explicit override wins; otherwise the client directory's
       saved currency wins; otherwise it is inferred from the text (any usd tag/rate
       present -> USD); otherwise it defaults to KES, per policy.
-    * Withholding tax (5% of the *grossed-up* platform fee) is applied only to the
-      line item labelled 'PLATFORM ...' and only when the final invoice currency is KES.
+    * Withholding tax (KES invoices only) is applied to the line item labelled
+      'PLATFORM ...', using the exact formula supplied for this workbook, where
+      `platform_fee` is the net amount taken straight from the BAAS INCOME text:
+          Withholding Tax   = platform_fee * 5 / 95
+          Gross Platform Fee = platform_fee * 100 / 95
+          Net Payable (this line) = platform_fee   (i.e. 95% of the gross)
     """
     warnings = []
     line_items = parsed["line_items"]
@@ -593,32 +622,17 @@ def resolve_invoice_amounts(parsed, client_row=None, currency_override=None, fx_
             resolved.append({"label": it["label"], "amount": 0.0, "raw": it["raw"]})
             continue
 
-        if it["currency_tag"] == "USD" or (it["notation"] == "mul" and it["rate"] is not None):
-            item_currency, amount = "USD", it["raw_amount"]
-        elif it["notation"] == "div":
-            item_currency, amount = "USD", it["raw_amount"] / it["rate"]
-        elif it["currency_tag"] and it["currency_tag"] != "USD":
-            item_currency, amount = it["currency_tag"], it["raw_amount"]
-        else:
-            item_currency, amount = None, it["raw_amount"]  # inherits invoice currency below
-
-        if item_currency is None:
-            if invoice_currency == "USD":
-                amount = amount / fx_rate
-            item_currency = invoice_currency
-        elif item_currency != invoice_currency:
-            # e.g. an item explicitly tagged KES inside an otherwise-USD invoice: convert it.
-            if item_currency == "KES" and invoice_currency == "USD":
-                amount = amount / fx_rate
-            elif item_currency == "USD" and invoice_currency == "KES":
-                amount = amount * fx_rate
+        # No conversion, ever: the amount in the text IS the line amount, regardless of
+        # currency tag, notation ('*rate' / '/rate') or the invoice's own currency.
+        amount = it["raw_amount"]
 
         is_platform = any(hint in it["label"].upper() for hint in PLATFORM_LABEL_HINTS)
         resolved.append({"label": it["label"], "amount": round(amount, 2), "raw": it["raw"], "is_platform": is_platform})
 
     # Sanity flag: a platform-fee line that is wildly larger than the others is almost certainly
-    # a leftover KES figure that should have been converted (a known data-entry pattern in the
-    # source tracker) - surface it instead of silently invoicing the wrong amount.
+    # a leftover KES figure the preparer meant to flag - surface it instead of silently
+    # invoicing an unexpected amount (amounts are never auto-converted, so this is the main
+    # safety net for that data-entry pattern).
     for r in resolved:
         if r.get("is_platform") and invoice_currency == "USD" and r["amount"] > 20000:
             warnings.append(
@@ -633,12 +647,11 @@ def resolve_invoice_amounts(parsed, client_row=None, currency_override=None, fx_
         gross = r["amount"]
         wht = 0.0
         if r.get("is_platform") and invoice_currency == "KES":
-            net_desired = gross
-            gross = round(net_desired / (1 - WHT_RATE), 2)
-            wht = round(gross * WHT_RATE, 2)
+            gross, wht = compute_wht_gross_up(r["amount"])
         subtotal_gross += gross
         total_wht += wht
-        final_items.append({"label": r["label"], "gross": gross, "wht": wht, "is_platform": r.get("is_platform", False)})
+        final_items.append({"label": r["label"], "amount": r["amount"], "gross": gross, "wht": wht,
+                             "is_platform": r.get("is_platform", False)})
 
     net_total = round(subtotal_gross - total_wht, 2)
     return {
@@ -690,7 +703,7 @@ def format_label(label):
 # ============================================================================================
 # DOCX generation - rebuilds the approved invoice template exactly (letterhead, fonts, layout)
 # ============================================================================================
-def _add_run(paragraph, text, bold=False, italic=False, size=12, font_name="Times New Roman"):
+def _add_run(paragraph, text, bold=False, italic=False, size=INVOICE_FONT_SIZE_PT, font_name="Times New Roman"):
     run = paragraph.add_run(text)
     run.bold = bold
     run.italic = italic
@@ -738,6 +751,8 @@ def generate_invoice_docx(client, invoice_meta, computed):
     # line spacing (the modern Word default). The approved invoice template has neither, so
     # left alone this alone is enough extra height to push the whole letter onto a second page.
     normal_style = document.styles['Normal']
+    normal_style.font.size = Pt(INVOICE_FONT_SIZE_PT)
+    normal_style.font.name = "Times New Roman"
     normal_style.paragraph_format.space_after = Pt(0)
     normal_style.paragraph_format.space_before = Pt(0)
     normal_style.paragraph_format.line_spacing = 1.0
@@ -865,6 +880,162 @@ def generate_invoice_docx(client, invoice_meta, computed):
 
 
 # ============================================================================================
+# PDF generation - renders the same invoice as HTML (CSS Paged Media) and converts via
+# WeasyPrint. Kept as a distinct, independent code path from the .docx builder above so a
+# PDF-export bug can never affect the approved .docx template.
+# ============================================================================================
+def _image_data_uri(image_path):
+    if not image_path or not os.path.exists(image_path):
+        return None
+    ext = os.path.splitext(image_path)[1].lstrip('.').lower() or "png"
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:image/{ext};base64,{b64}"
+
+
+def build_invoice_html(client, invoice_meta, computed):
+    """Build a standalone HTML document for the invoice, styled to mirror the .docx layout."""
+    currency = computed["invoice_currency"]
+    period_label = invoice_meta["period_label"]
+
+    rows_html = ""
+    for item in computed["line_items"]:
+        label = format_label(item["label"])
+        if item.get("is_platform"):
+            label = f"Monthly Platform Fee ({period_label})"
+        rows_html += f"<tr><td>{label}</td><td class='amt'>{format_money(item['gross'], currency)}</td></tr>\n"
+        if item.get("is_platform") and item["wht"] > 0:
+            rows_html += (f"<tr><td>Less: Withholding Tax ({int(WHT_RATE * 100)}%)</td>"
+                          f"<td class='amt'>{format_money(item['wht'], currency)}</td></tr>\n")
+
+    logo_uri = _image_data_uri(LOGO_PATH)
+    footer_uri = _image_data_uri(FOOTER_BANNER_PATH)
+    header_img_html = f"<img src='{logo_uri}' class='letterhead-img' />" if logo_uri else ""
+    footer_img_html = f"<img src='{footer_uri}' class='letterhead-img' />" if footer_uri else ""
+
+    narration = f"{client.get('invoice_prefix', '')} Monthly BaaS Service Fee {invoice_meta['invoice_date'].strftime('%Y%m')}"
+    paybill_html = ""
+    if client.get("paybill"):
+        paybill_html = f"<div class='pay-line'><span class='pay-label'>Paybill:</span> {client.get('paybill')}</div>"
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+    @page {{
+        size: A4;
+        margin: 0.7in;
+    }}
+
+    body {{
+        font-family: 'Times New Roman', Times, serif;
+        font-size: 11pt;
+        line-height: 1.6;
+        color: #1a1a1a;
+        margin: 0;
+        padding: 0;
+    }}
+
+    .letterhead-img {{ width: 100%; display: block; margin-bottom: 12px; }}
+    .footer-img {{ width: 100%; display: block; margin-top: 24px; }}
+
+    .invoice-meta p {{ margin: 4px 0; }}
+    .invoice-meta .row {{ display: flex; justify-content: space-between; }}
+
+    table.invoice-table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin: 20px 0;
+    }}
+    table.invoice-table th, table.invoice-table td {{
+        border: 1px solid #333;
+        padding: 6px 10px;
+        text-align: left;
+    }}
+    table.invoice-table th {{ background: #F0EBF9; }}
+    table.invoice-table td.amt {{ text-align: right; }}
+    table.invoice-table tr.total td {{ font-weight: bold; }}
+
+    .payment-details .heading {{ font-weight: bold; margin-top: 16px; }}
+    .payment-details .method {{ font-style: italic; margin-top: 10px; }}
+    .pay-line {{ margin: 2px 0; }}
+    .pay-label {{ font-weight: bold; display: inline-block; min-width: 110px; }}
+</style>
+</head>
+<body>
+    {header_img_html}
+
+    <div class="invoice-meta">
+        <div class="row">
+            <p><b>To:</b> {client.get('legal_name', '').upper()}</p>
+            <p><b>Invoice No:</b> {invoice_meta['invoice_no']}</p>
+        </div>
+        <div class="row">
+            <p><b>Email:</b> {client.get('contact_email', '')}</p>
+            <p><b>Date:</b> {invoice_meta['invoice_date'].strftime('%d/%m/%Y')}</p>
+        </div>
+        <div class="row">
+            <p>&nbsp;</p>
+            <p><b>Due Date:</b> {invoice_meta['due_date'].strftime('%d/%m/%Y')}</p>
+        </div>
+    </div>
+
+    <table class="invoice-table">
+        <tr><th>DESCRIPTION</th><th>AMOUNT</th></tr>
+        {rows_html}
+        <tr class="total"><td>TOTAL NET PAYABLE</td><td class="amt">{format_money(computed['net_total'], currency)}</td></tr>
+    </table>
+
+    <div class="payment-details">
+        <div class="heading">Payment Details:</div>
+
+        <div class="method">For RTGS;</div>
+        <div class="pay-line"><span class="pay-label">Account Name:</span> Choice Microfinance Bank Limited</div>
+        <div class="pay-line"><span class="pay-label">Bank:</span> {client.get('rtgs_bank_name', 'CHOICE MICROFINANCE BANK LIMITED')}</div>
+        <div class="pay-line"><span class="pay-label">Bank Code:</span> {client.get('rtgs_bank_code', '082')}</div>
+        <div class="pay-line"><span class="pay-label">Account No:</span> {client.get('rtgs_account_no', '')}</div>
+        <div class="pay-line"><span class="pay-label">Branch:</span> {client.get('rtgs_branch', 'HEAD OFFICE')}</div>
+        <div class="pay-line"><span class="pay-label">Branch Code:</span> {client.get('rtgs_branch_code', '001')}</div>
+        <div class="pay-line"><span class="pay-label">Swift Code:</span> {client.get('rtgs_swift', 'CHFIKENX')}</div>
+        <div class="pay-line"><span class="pay-label">Narration:</span> {narration}</div>
+
+        <p>Or</p>
+
+        <div class="method">{client.get('alt_method_label', 'For SWIFT Transfer;')}</div>
+        <div class="pay-line"><span class="pay-label">Account Name:</span> Choice Microfinance Bank Limited</div>
+        <div class="pay-line"><span class="pay-label">Bank:</span> {client.get('alt_bank_name', 'I&M Bank Kenya Ltd')}</div>
+        <div class="pay-line"><span class="pay-label">Bank Code:</span> {client.get('alt_bank_code', '57')}</div>
+        <div class="pay-line"><span class="pay-label">Account No:</span> {client.get('alt_account_no', '')}</div>
+        <div class="pay-line"><span class="pay-label">Branch:</span> {client.get('alt_branch', 'Parklands')}</div>
+        <div class="pay-line"><span class="pay-label">Branch Code:</span> {client.get('alt_branch_code', '010')}</div>
+        <div class="pay-line"><span class="pay-label">Swift Code:</span> {client.get('alt_swift', 'IMBLKENA')}</div>
+        {paybill_html}
+        <div class="pay-line"><span class="pay-label">Narration:</span> {narration}</div>
+    </div>
+
+    {f'<img src="{footer_uri}" class="footer-img" />' if footer_uri else ''}
+</body>
+</html>"""
+    return html
+
+
+def generate_invoice_pdf(client, invoice_meta, computed):
+    """
+    Renders the invoice HTML (see build_invoice_html) to PDF via WeasyPrint.
+    Returns a BytesIO of the finished .pdf, or None if WeasyPrint isn't installed
+    (the caller should fall back to offering the .docx only in that case).
+    """
+    if _WeasyHTML is None:
+        return None
+    html_str = build_invoice_html(client, invoice_meta, computed)
+    buf = io.BytesIO()
+    _WeasyHTML(string=html_str, base_url=ASSETS_DIR).write_pdf(buf)
+    buf.seek(0)
+    return buf
+
+
+# ============================================================================================
 # Email sending
 # ============================================================================================
 def send_invoice_email(smtp_cfg, to_email, cc_emails, subject, body, attachment_bytes, attachment_name):
@@ -982,7 +1153,12 @@ def baas_invoice_generation_app():
                         "period_month": parsed["period_month"] or "",
                         "period_year": parsed["period_year"] or datetime.now().year,
                         "currency": computed["invoice_currency"],
-                        "platform_fee": next((i["gross"] for i in computed["line_items"] if i["is_platform"]), 0.0),
+                        # NET platform fee (pre-WHT, pre-gross-up) - i.e. exactly the figure
+                        # taken from the BAAS INCOME text. This is what compute_wht_gross_up()
+                        # expects as its input, so it must stay net here: showing the already
+                        # grossed-up amount in this column would cause the generation step
+                        # below to gross it up a second time.
+                        "platform_fee": next((i["amount"] for i in computed["line_items"] if i["is_platform"]), 0.0),
                         "other_fees": round(sum(i["gross"] for i in computed["line_items"] if not i["is_platform"]), 2),
                         "withholding_tax": computed["total_wht"],
                         "net_total": computed["net_total"],
@@ -1008,7 +1184,12 @@ def baas_invoice_generation_app():
                     column_config={
                         "select": st.column_config.CheckboxColumn("Generate?"),
                         "currency": st.column_config.SelectboxColumn("Currency", options=["KES", "USD", "EUR", "GBP"]),
-                        "platform_fee": st.column_config.NumberColumn("Platform Fee", format="%.2f"),
+                        "platform_fee": st.column_config.NumberColumn(
+                            "Platform Fee (Net, pre-WHT)", format="%.2f",
+                            help="The net platform fee as it appears in the source text, before "
+                                 "the withholding-tax gross-up. This is the figure the invoice's "
+                                 "gross Monthly Platform Fee and 5% WHT line are calculated from."
+                        ),
                         "other_fees": st.column_config.NumberColumn("Other Fees", format="%.2f"),
                         "withholding_tax": st.column_config.NumberColumn("WHT (5%)", format="%.2f"),
                         "net_total": st.column_config.NumberColumn("Net Total", format="%.2f"),
@@ -1035,14 +1216,19 @@ def baas_invoice_generation_app():
                         parsed = parse_baas_income_text(row["raw_text"])
                         computed = resolve_invoice_amounts(parsed, client_row, currency_override=row["currency"])
                         # Let manual edits to platform_fee / other_fees in the grid override the parse.
+                        # row["platform_fee"] is the NET figure (see the column's help text above) -
+                        # re-parsing it here re-applies compute_wht_gross_up() to that same net
+                        # figure, so an unedited row reproduces exactly what was already computed
+                        # at parse time instead of grossing it up a second time.
                         if computed["line_items"]:
                             for item in computed["line_items"]:
                                 if item["is_platform"] and row.get("platform_fee"):
                                     net_desired = float(row["platform_fee"])
                                     if row["currency"] == "KES":
-                                        gross = round(net_desired / (1 - WHT_RATE), 2)
-                                        item["gross"], item["wht"] = gross, round(gross * WHT_RATE, 2)
+                                        item["gross"], item["wht"] = compute_wht_gross_up(net_desired)
                                     else:
+                                        # Amounts are never converted / grossed-up outside KES -
+                                        # the figure in the grid is used exactly as entered.
                                         item["gross"], item["wht"] = net_desired, 0.0
                             computed["subtotal_gross"] = round(sum(i["gross"] for i in computed["line_items"]), 2)
                             computed["total_wht"] = round(sum(i["wht"] for i in computed["line_items"]), 2)
@@ -1087,7 +1273,7 @@ def baas_invoice_generation_app():
                             for w in computed["warnings"]:
                                 st.warning(w)
 
-                        col_a, col_b, col_c = st.columns([1, 1, 2])
+                        col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
                         with col_a:
                             st.download_button(
                                 "⬇️ Download .docx", data=doc_info["buf"].getvalue(),
@@ -1096,8 +1282,26 @@ def baas_invoice_generation_app():
                                 key=f"dl_{key}",
                             )
                         with col_b:
-                            send_clicked = st.button("📧 Send by Email", key=f"send_btn_{key}")
+                            # PDF is rendered on demand (rather than at generation time) so the
+                            # WeasyPrint conversion cost is only paid for invoices someone
+                            # actually wants as a PDF.
+                            if st.button("📄 Convert to PDF", key=f"pdf_btn_{key}"):
+                                pdf_buf = generate_invoice_pdf(client, invoice_meta, computed)
+                                if pdf_buf is None:
+                                    st.error("❌ PDF export isn't available - the 'weasyprint' package "
+                                              "isn't installed on this server.")
+                                else:
+                                    st.session_state[f"pdf_bytes_{key}"] = pdf_buf.getvalue()
+                            if st.session_state.get(f"pdf_bytes_{key}"):
+                                st.download_button(
+                                    "⬇️ Download .pdf", data=st.session_state[f"pdf_bytes_{key}"],
+                                    file_name=f"{client.get('legal_name','Invoice').replace(' ', '_')}_{invoice_meta['invoice_no'].replace('/', '_')}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_{key}",
+                                )
                         with col_c:
+                            send_clicked = st.button("📧 Send by Email", key=f"send_btn_{key}")
+                        with col_d:
                             pass
 
                         if send_clicked:
@@ -1159,6 +1363,67 @@ def baas_invoice_generation_app():
             "add the rest here once and every future month reuses them."
         )
         clients_df = baas_db.load_clients()
+
+        with st.expander("➕ Add New Client (seed a new client without editing code)", expanded=False):
+            st.caption(
+                "Onboard a client here instead of hand-editing a blank row below - this fills in "
+                "the same sensible defaults (Choice Microfinance Bank RTGS details, I&M Bank SWIFT "
+                "alternative, invoice prefix, match keywords) that a code-seeded client gets. Every "
+                "field can still be fine-tuned in the table afterwards, and a client's currency or "
+                "banking details can always change again next month by editing that row - this form "
+                "is only for creating the client the first time."
+            )
+            with st.form(key="baas_add_client_form", clear_on_submit=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_legal_name = st.text_input("Legal Name *", key="baas_new_legal_name")
+                    new_currency = st.selectbox("Currency *", options=["KES", "USD", "EUR", "GBP"], key="baas_new_currency")
+                    new_invoice_group = st.selectbox("Invoice Day *", options=["5th", "10th"], key="baas_new_invoice_group")
+                    new_contact_email = st.text_input("Contact Email", key="baas_new_contact_email")
+                with col2:
+                    new_match_keywords = st.text_input(
+                        "Match Keywords (comma separated)", key="baas_new_match_keywords",
+                        help="Leave blank to auto-derive from the legal name (same logic the code seed uses)."
+                    )
+                    new_invoice_prefix = st.text_input(
+                        "Invoice Prefix", key="baas_new_invoice_prefix",
+                        help="Leave blank to auto-derive from the first word of the legal name."
+                    )
+                    new_rtgs_account_no = st.text_input("RTGS Account No.", key="baas_new_rtgs_account_no")
+                    new_paybill = st.text_input("Paybill (optional)", key="baas_new_paybill")
+
+                st.markdown("**Alternative / SWIFT method**")
+                col3, col4 = st.columns(2)
+                with col3:
+                    new_alt_method_label = st.text_input(
+                        "Alt Method Label", value="For SWIFT Transfer;", key="baas_new_alt_method_label"
+                    )
+                with col4:
+                    new_alt_account_no = st.text_input("Alt Account No.", key="baas_new_alt_account_no")
+
+                add_submitted = st.form_submit_button("➕ Add Client", type="primary")
+                if add_submitted:
+                    legal_name_clean = new_legal_name.strip()
+                    if not legal_name_clean:
+                        st.error("❌ Legal Name is required.")
+                    elif clients_df["legal_name"].str.strip().str.upper().eq(legal_name_clean.upper()).any():
+                        st.error(f"❌ A client named '{legal_name_clean}' already exists - edit it in the table below instead.")
+                    else:
+                        keywords = new_match_keywords.strip() or _default_keywords(legal_name_clean)
+                        new_row = _blank_client(legal_name_clean, new_currency, new_invoice_group, keywords)
+                        if new_invoice_prefix.strip():
+                            new_row["invoice_prefix"] = new_invoice_prefix.strip()
+                        new_row["contact_email"] = new_contact_email.strip()
+                        new_row["rtgs_account_no"] = new_rtgs_account_no.strip()
+                        new_row["paybill"] = new_paybill.strip()
+                        new_row["alt_method_label"] = new_alt_method_label.strip() or "For SWIFT Transfer;"
+                        new_row["alt_account_no"] = new_alt_account_no.strip()
+
+                        updated_df = pd.concat([clients_df, pd.DataFrame([new_row])], ignore_index=True)
+                        baas_db.save_clients(updated_df)
+                        st.success(f"✅ Added '{legal_name_clean}'. Fine-tune banking details below if needed.")
+                        st.rerun()
+
         edited_clients = st.data_editor(
             clients_df, use_container_width=True, num_rows="dynamic",
             height=500, key="baas_client_editor",
